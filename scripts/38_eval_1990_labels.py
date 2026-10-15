@@ -40,7 +40,7 @@ for city in CITIES:
     nx, ny = int(round((x1 - x0) / RES)), int(round((y1 - y0) / RES))
 
     # labels -> clip CRS, then rasterise on the 0.5 m grid
-    vds = ogr.Open(shp); lyr = vds.GetLayer()
+    lyr = ogr.Open(shp).GetLayer()
     fields = [lyr.GetLayerDefn().GetFieldDefn(i).GetName() for i in range(lyr.GetLayerDefn().GetFieldCount())]
     nfeat = lyr.GetFeatureCount()
     lab_gpkg = os.path.join(tmpdir, f"{city}.gpkg")
@@ -68,7 +68,7 @@ for city in CITIES:
         if not sel:
             print(f"  {name:18s} no canopy map overlaps the clip ({len(files)} maps in {city}_{era})"); continue
         P = gdal.Warp("", sel, format="MEM", outputBounds=(x0, y0, x1, y1), xRes=RES, yRes=RES,
-                      resampleAlg="near", srcNodata="None", dstNodata=255, outputType=gdal.GDT_Byte).ReadAsArray()
+                      resampleAlg="near", dstNodata=255, outputType=gdal.GDT_Byte).ReadAsArray()
         ok = valid & (P != 255)
         p, l = (P == 1) & ok, L & ok
         tp, fp, fn = int((p & l).sum()), int((p & ~l).sum()), int((~p & l).sum())

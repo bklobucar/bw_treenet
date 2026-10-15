@@ -169,7 +169,10 @@ Result (`38_eval_1990_labels.py`, 1 km clip per city, 0.5 m evaluation grid):
 | Stockholm | 33.4% | both | 0.0% | 0 | 0 | 0 |
 
 - **0.5 m scores higher in both evaluable cities**, even though these clips were in training at 1 m. At 1 m the model misses half the labelled canopy in Malmö (recall 0.475).
-- **Stockholm:** no canopy is predicted anywhere in the clip in either run, so the clip is masked or not covered. A diagnosis is queued in `39`.
+- **Masking caveat** (`39` diagnosis): production predicts only inside the 2023 tätort (prob = −1 elsewhere).
+  - Malmö's clip is 100% inside the tätort, so its scores are valid.
+  - Gothenburg's clip is only 25% inside, so the table above counts the masked 75% as missed canopy. A rerun restricted to predicted pixels is queued (`38`, updated).
+  - Stockholm's clip is 0% inside, so it can't be evaluated from production maps; it would need an unmasked run.
 - **Whole-city effect** (from `20_aggregate_canopy.py`): 1990r05 minus 1990 = Malmö +4.0, Gothenburg +4.2, Stockholm +4.3 pp. That matches the 4-sheet test.
 - **To do:** label a few unseen 1990s windows per city for an independent check.
 
@@ -189,13 +192,36 @@ Frames and valid area: Malmö 12 frames, about 118 km², in all eras. Gothenburg
 
 **Leaf-off effect, measured.** On the same 17 Gothenburg sheets, the 2005 flight (looks leaf-off) gives **22.65%** and the 2008 flight gives **31.03%**: −8.4 pp, about 5× the noise floor between flights. This validates the leaf-on screening and shows that one wrong flight can create or erase a decade of apparent change.
 
-**Early reading (not conclusions):**
+### 7.1 Common footprint (the series to use)
 
-- With the 1990s at 0.5 m, the old 1970s → 1990s drop largely disappears (Gothenburg 21.2 → 20.3; Stockholm 31.0 → 25.6). In Malmö it becomes a rise (5.7 → 12.3).
-- Gothenburg and Stockholm show a **step of +10–11 pp between the 1990s and ~2005**, then stay flat or dip slightly to ~2010 (within about 2 pp, near the noise floor). A step at the exact point where the source changes from 1 m scanned film to 0.5 m digital colour is what a **source effect** would look like. Two checks are queued (job script `job_series_checks.sh`):
-  1. **Common footprint** (`39_common_footprint.py`): every era on the intersection of tätort and imagery valid in all series eras. This removes the Stockholm 36 → 47 frame change and the Gothenburg 16 → 17 change.
-  2. **Degraded ~2005 (`2005deg`):** the ~2005 imagery is downsampled to 1 m (average), then upsampled to 0.5 m (bilinear), exactly like the 1990s. If cover falls toward the 1990s level, the step is mostly the source resolution; if it stays near 31% / 37%, it is more likely real change. This isolates resolution only, not other film properties (grain, contrast, scanning).
-- Malmö differs: it rises between the 1970s and 1990s (both film) and is flat afterwards.
+Source: `results/canopy_common_footprint.csv` (`39_common_footprint.py`, 15 Oct 2026). The study area per city is the 2023 tätort ∩ imagery valid in every series era.
+
+| City | Common area | 1960s | 1970s | 1990s (0.5 m) | ~2005 | ~2010 |
+|---|---|---|---|---|---|---|
+| Malmö | 118.8 km² (12 sheets) | 6.60 | 5.50 | 12.23 | 10.87 | 11.64 |
+| Gothenburg | 191.3 km² (16 sheets) | 19.31 | 21.04 | 20.44 | 30.74 | 28.42 |
+| Stockholm | 372.0 km² (25 sheets) | 25.52 | 28.26 | 25.32 | 34.37 | 33.12 |
+
+Checks on the same footprint:
+
+| City | 1990s at 1 m (old) | 1990s at 0.5 m | Δ | ~2005 | ~2005 degraded to 1 m and back | Δ | Gothenburg 2005 flight (leaf-off) |
+|---|---|---|---|---|---|---|---|
+| Malmö | 8.23 | 12.23 | +4.0 | 10.87 | 10.58 | −0.3 | — |
+| Gothenburg | 16.44 | 20.44 | +4.0 | 30.74 | 30.56 | −0.2 | 22.59 (−8.2 vs 2008) |
+| Stockholm | 21.36 | 25.32 | +4.0 | 34.37 | 34.21 | −0.2 | — |
+
+What this establishes:
+
+1. **The footprint change doesn't explain the step.** On a fixed area, Gothenburg still rises +10.3 pp and Stockholm +9.1 pp from the 1990s to ~2005.
+2. **Inference resolution matters a lot** (+4.0 pp in all three cities). **Source resolution does not:** ~2005 imagery degraded to 1 m and upsampled again loses only 0.2–0.3 pp, below the noise floor. So the 1990s → ~2005 step is **not** caused by the 1990s being 1 m imagery.
+3. **What remains to explain the step:** (a) real canopy gain in Gothenburg and Stockholm between 1995 and 2005/2008; or (b) film vs digital radiometry. Panchromatic film has a different spectral response to an RGB band mean, plus grain, contrast and scanning effects.
+   - Against a pure source effect: Malmö makes the same film → digital switch (1998 → 2004) with **no** step (12.2 → 10.9).
+   - For one: Malmö's canopy is mostly street and garden trees, while Gothenburg and Stockholm include large forest patches whose texture may read differently on film.
+4. **Decisive test, queued:** panchromatic film flights from just before the digital era. Stockholm has 1999 and 2000; Gothenburg has 2001; Malmö 2000 has partial coverage only. All are 1 m film, processed exactly like the 1990s (upsampled to 0.5 m).
+   - Film 1995 ≈ 1999 ≈ 2000, then a jump to digital 2005 → **source effect**. Real canopy can't gain 9–10 pp in 4–5 years.
+   - A gradual rise across 1995 → 1999 → 2000 → 2005 → **real change**.
+
+Malmö's 1970s → 1990s rise (5.5 → 12.2, both film) is a separate open question.
 
 ---
 
@@ -226,8 +252,10 @@ Why the runs aren't merged:
 
 - [x] ~2005 cover values for all three cities (`results/canopy_change_v19_ext.csv`).
 - [x] 1990s label evaluation, 1 m vs 0.5 m: 0.5 m better in Malmö and Gothenburg.
-- [ ] Stockholm 1990s clip scores zero in both runs: diagnose (`39`, clip section).
-- [ ] Common-footprint series (`39`) and the degraded-2005 source test (`2005deg`).
+- [x] Stockholm 1990s clip scores zero: the clip lies outside the 2023 tätort, so production masks it.
+- [x] Common-footprint series (`39`) and the degraded-2005 test: source resolution is not the cause of the step.
+- [ ] Film-vs-digital test: pan 1999/2000/2001 flights (`pan1999`, `pan2000`) on their own footprint (`39 --own-footprint`).
+- [ ] Gothenburg label evaluation restricted to predicted (tätort) pixels (`38`, updated).
 - [ ] Unseen 1990s test windows per city for an independent accuracy check.
 - [ ] Build the ~2020 era (~219 GB raw at 0.16 m): convert and delete per sheet; check the quota first.
 - [ ] Add `2020` to `20_aggregate_canopy.py` once it's built.
