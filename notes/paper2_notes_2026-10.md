@@ -281,3 +281,130 @@ Why the runs aren't merged:
 | `19_production_inference.py` | `rgb_to_gray` → band mean; `--era` choices read from `SOURCES`; new eras `1990r05`, `1990r10`, `2005`, `2005cmp`, `2010`, `2020` |
 | `20_aggregate_canopy.py` | new eras added; writes `canopy_change_v19_ext.csv` (original csv untouched) |
 | `07_prepare_tiles_all_cities.py` (HomePC) | config annotated with the true training sources |
+## Update 19 Oct 2026: the film → digital step
+
+### Bottom line
+
+- The 1990s → ~2005 rise in Gothenburg (+10.3 pp) and Stockholm (+9.1 pp) is **a source effect, not real canopy gain**.
+- The jump appears exactly where the imagery switches from panchromatic film to digital colour. The last film flights (1999–2001) match the 1990s.
+- The step sits in **closed stands**: built-up windows barely move, densely wooded ones jump 20–30 pp, and up to half of the gained area is whole patches with no film-era canopy within 5 m. This matches Malmö showing no step, since its canopy is mostly street and garden trees.
+- **Cause still open, and pending a visual check of the image strips:**
+  - (A) the model under-calls dense stands on film; or
+  - (B) the film flights are leaf-off. Lantmäteriet metadata gives only the year (`leaf=unknown`), and the same applies to the 1990s flights.
+
+### 1. Film-vs-digital test
+
+Pre-digital panchromatic film flights, processed exactly like the 1990s: 1 m film, upsampled to 0.5 m (bilinear), production v19. Source: `results/canopy_own_footprints.csv` (`39 --own-footprint`, job `film_analysis`).
+
+Each row is measured on the area where that film flight has imagery (2023 tätort ∩ imagery valid in all series eras and the film flight).
+
+| City, footprint | Area | 1960s | 1970s | 1990s (0.5 m) | **Late film** | Digital ~2005 | ~2010 |
+|---|---|---|---|---|---|---|---|
+| Gothenburg, 2001 flight | 191.3 km², 16 sheets | 19.31 | 21.04 | 20.44 | **19.41** (2001) | 30.74 (2008) | 28.42 |
+| Stockholm, 1999 flight | 162.0 km², 15 sheets | 25.83 | 25.62 | 24.67 | **25.30** (1999) | 31.84 (2005) | 31.17 |
+| Stockholm, 2000 flight | 210.0 km², 15 sheets | 25.28 | 30.30 | 25.83 | **22.42** (2000) | 36.32 (2005) | 34.63 |
+
+Full study area, from production: Gothenburg 2001 19.44%, Stockholm 1999 25.75%, Stockholm 2000 23.95%.
+
+- The film years (1995, 1999, 2000/01) stay within about ±1 pp of each other. The exception is Stockholm 2000 at −3.4 pp, which may be a partly leaf-off flight.
+- The step comes at the switch to digital: **+11.3 pp** (Gothenburg), **+6.5 pp** (Stockholm 1999 footprint), **+13.9 pp** (Stockholm 2000 footprint). Real canopy can't gain 7–14 pp in 5–7 years and then stay flat to 2010.
+- Already excluded (15 Oct, common footprint):
+  - **Footprint change:** the step persists on a fixed area.
+  - **Source resolution:** ~2005 degraded to 1 m and back loses only 0.2–0.3 pp.
+- What remains is **film vs digital radiometry**: spectral response, grain, contrast, scanning. Possibly combined with leaf state.
+
+Malmö has no full-coverage film flight around 2000 (partial in 2000: 9 of 12 sheets), so it isn't in this test. It crosses the film → digital switch with no step (1990s 12.2 → ~2005 10.9).
+
+### 2. Where the step lands (`40_film_digital_windows.py`)
+
+Pixels valid in both film and digital (inside tätort, not water), cut into 250 m windows. The step is broken down by how wooded each window is in 2010. Gained pixels are classed by distance from film-era canopy.
+
+| | Gothenburg (2001 → 2008) | Stockholm (1999 → 2005) | Stockholm (2000 → 2005) |
+|---|---|---|---|
+| Area scored | 219.7 km², 17 sheets | 222.0 km², 27 sheets | 291.1 km², 27 sheets |
+| Film → digital cover | 19.44 → 31.03 | 25.75 → 32.58 | 23.95 → 39.50 |
+| Net step | +11.59 pp | +6.84 pp | +15.55 pp |
+| Gross gain / loss | 15.17 / 3.57 pp | 11.19 / 4.35 pp | 18.73 / 3.18 pp |
+| Gain ≤1 m from film canopy (wider outlines) | 16.2% | 21.2% | 15.0% |
+| Gain 1–5 m (near existing crowns) | 39.3% | 44.6% | 35.6% |
+| Gain >5 m (whole new patches) | **44.5%** | 34.2% | **49.4%** |
+
+Step (pp) by 2010 cover of the window:
+
+| 2010 cover of window | Gothenburg | Stockholm 1999 | Stockholm 2000 |
+|---|---|---|---|
+| 0–10% | +1.2 | +0.3 | +3.4 |
+| 10–25% | +7.0 | +4.7 | +8.4 |
+| 25–50% | +14.8 | +7.7 | +15.0 |
+| 50–75% | +23.2 | +10.8 | +22.3 |
+| 75–100% | **+31.6** | +9.0 | **+22.2** |
+| Share of net step from windows ≥50% wooded | 39.5% | 25.1% | 38.3% |
+
+In the extreme windows, film-era predictions call almost nothing where digital calls closed canopy. For example, Gothenburg 640_30_05 (E309250 N6403500) goes from 7% (2001) to 90% (2008), with 82% in 2010. Gothenburg's eight largest-step windows all go from 7–28% to 86–97%, with 2010 confirming 35–92%.
+
+**Caveat:** binning by 2010 cover (digital) partly correlates with the digital-era values. The trend is robust, but the bin shares shouldn't be read as exact. The extreme windows are far beyond any binning effect.
+
+Image strips: `results/film_windows_{gtb_pan2000,sth_pan1999,sth_pan2000}.png`. Columns are 1990s | film | digital ~2005 | 2010, with predicted canopy outlined in red. Some cells are blank because the flights don't cover those sheets (Stockholm 1999 and 2000 cover different sheets; the 1990s don't cover the eastern sheets).
+
+### 3. Interpretation and implications
+
+- **(A) Model failure on film in closed stands (leading hypothesis).**
+  - The historical training tiles (102/142/172) likely contain few closed stands (to verify against the tile footprints).
+  - On film, a dense stand may read as uniform dark texture rather than individual crowns.
+  - Consistent with the urban label clips, which show no film under-calling (section 4).
+- **(B) Leaf-off film flights.** Deciduous stands lose their texture.
+  - Against it as the full story: 1995, 1999 and 2001 agree with each other, which would require all of them to be leaf-off to a similar degree.
+  - Stockholm 2000 being lowest fits a partly leaf-off flight.
+- **Deciding check:** the image strips.
+  - Trees visible in the film column but not outlined → (A).
+  - Grey, lacy crowns → (B).
+
+**Consequences for Paper 2 (if A holds):**
+
+1. No change can be reported across the film/digital break for Gothenburg and Stockholm. The series is two internally consistent sub-series: **film 1960–2001** and **digital 2005–2020**.
+2. Absolute film-era cover is likely **biased low in wooded areas**: all film eras (1960s, 1970s, 1990s) in Gothenburg and Stockholm. Change *between* film eras is affected only where the forest share changed.
+3. Malmö is least affected (few closed stands). This is consistent with no step.
+4. **Fix:** historical training tiles from closed stands, as Gui advised (era-matched labels are the bottleneck). Candidate windows are Gothenburg 640_30_05 (E309250 N6403500) and 640_31_50 (E310250 N6405500). Labelling them in film imagery also gives a forest-stand accuracy figure for Paper 1, which the urban clips can't provide.
+
+### 4. 1990s label evaluation (corrected)
+
+Source: `results/eval_1990_labels.csv` (`38`, 19 Oct). Production predicted pixels only, i.e. inside the 2023 tätort.
+
+| City (scored part of clip) | Run | Cover vs labels | IoU | Precision | Recall |
+|---|---|---|---|---|---|
+| Malmö (100%) | 1 m | 8.3 vs 13.5 | 0.416 | 0.771 | 0.475 |
+| | 0.5 m | 14.7 vs 13.5 | **0.471** | 0.614 | 0.670 |
+| Gothenburg (25%) | 1 m | 27.1 vs 18.4 | 0.415 | 0.493 | 0.726 |
+| | 0.5 m | 22.4 vs 18.4 | **0.475** | 0.586 | 0.714 |
+| Stockholm (0%) | — | clip lies entirely outside the 2023 tätort, so it can't be evaluated from production maps | | | |
+
+- 0.5 m beats 1 m in both evaluable cities and brings cover closer to the labels. This supports switching the 1990s to 0.5 m on labels as well as on the series.
+- Caveats:
+  - The clips were in training (at 1 m), so these aren't independent accuracies.
+  - Gothenburg's scored area is only 0.25 km².
+  - Neither clip contains a closed stand.
+- On urban canopy, film at 0.5 m does not under-call (+1.2 pp Malmö, +4.0 pp Gothenburg).
+
+### 5. Code changes and bugs (19 Oct)
+
+- **`38_eval_1990_labels.py`:**
+  - The canopy maps carry `NoData Value=0`. Without `srcNodata="None"` the warp dropped every non-canopy pixel, scoring only predicted canopy (recall 1.000 by construction). Fixed.
+  - The OGR layer is now held through its dataset (`lds = ogr.Open(shp); lyr = lds.GetLayer()`); before, it could be freed mid-use.
+  - Scoring is restricted to pixels where production predicted (`prob >= 0`).
+- **`39_common_footprint.py`:**
+  - `--own-footprint` added (patched on the cluster via `patch_38_39.py`).
+  - Its `warp` already used `srcNodata="None"`, so all `39` numbers are unaffected by the nodata issue.
+  - Partial-coverage eras must go through `--own-footprint`, not `--extra`.
+- **`40_film_digital_windows.py`** (new): step breakdown by distance from film canopy and by window woodedness, plus image strips.
+- **Note:** the Arrhenius login node is x86 and the `gis` env is GH200-only, so GDAL commands need a GPU node.
+
+### Open
+
+- [x] Film-vs-digital test: the step is a source effect.
+- [x] Spatial breakdown: the step sits in closed stands, much of it in whole patches.
+- [x] 1990s label evaluation on predicted pixels (Gothenburg, Malmö).
+- [ ] Inspect the image strips: model failure (A) vs leaf-off film (B).
+- [ ] If A: label 1–2 closed-stand film windows, add them to training, retrain, and rerun the film eras and series.
+- [ ] Decide how Paper 2 reports the series: two sub-series vs a calibrated single series.
+- [ ] Unseen 1990s test windows per city (independent accuracy), including at least one closed stand.
+- [ ] Malmö 1970s → 1990s rise (5.5 → 12.2, both film): separate open question.

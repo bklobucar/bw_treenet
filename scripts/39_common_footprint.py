@@ -119,6 +119,50 @@ def common_footprint(a, tat_ds):
                 print(f"{city:8s}" + "".join(f"{vals[e]:9.2f}" if e in vals else f"{'-':>9s}" for e in a.series + a.extra))
 
 
+def own_footprints(a, tat_ds):
+    """Series eras and each partial-coverage era, on exactly the area where that era has imagery."""
+    if not a.own_footprint:
+        return
+    print("\n== series on the footprint of each partial-coverage era")
+    rows = []
+    for city in CITIES:
+        idx = {e: index(city, e) for e in a.series + a.own_footprint}
+        if any(not idx[e] for e in a.series):
+            continue
+        base = set.intersection(*[set(idx[e]) for e in a.series])
+        for x in a.own_footprint:
+            if not idx[x]:
+                continue
+            sheets = sorted(base & set(idx[x]))
+            if not sheets:
+                continue
+            area, can = 0.0, {e: 0.0 for e in a.series + [x]}
+            for sh in sheets:
+                box = sheet_box(sh)
+                f = tatort(box, a.res, tat_ds)
+                for e in a.series + [x]:
+                    f &= warp(idx[e][sh][0], box, a.res, "near") > 0
+                if not f.any():
+                    continue
+                area += f.sum()
+                for e in a.series + [x]:
+                    can[e] += float(warp(idx[e][sh][1], box, a.res, "average", gdal.GDT_Float32)[f].sum())
+            if not area:
+                continue
+            km2 = area * a.res ** 2 / 1e6
+            order = sorted(a.series + [x], key=lambda e: int("".join(ch for ch in e if ch.isdigit())[:4]))
+            print(f"{city:6s} on {x} footprint ({len(sheets)} sheets, {km2:.1f} km2): " +
+                  "  ".join(f"{e} {100 * can[e] / area:.2f}" for e in order))
+            for e in order:
+                rows.append(dict(city=city, footprint=x, era=e, area_km2=round(km2, 2),
+                                 canopy_pct=round(100 * can[e] / area, 3)))
+    if rows:
+        with open("results/canopy_own_footprints.csv", "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
+            w.writeheader(); w.writerows(rows)
+        print("wrote results/canopy_own_footprints.csv")
+
+
 def diagnose_clips(tat_ds):
     print("\n== 1990s label clips: why a clip can score zero")
     for city in CITIES:
@@ -150,10 +194,12 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--series", nargs="+", default=["1960", "1970", "1990r05", "2005", "2010"])
     ap.add_argument("--extra", nargs="+", default=["1990", "2005cmp", "2005deg"])
+    ap.add_argument("--own-footprint", nargs="*", default=[])
     ap.add_argument("--res", type=float, default=1.0)
     ap.add_argument("--no-diag", action="store_true")
     a = ap.parse_args()
     tat_ds = gdal.OpenEx(TAT, gdal.OF_VECTOR)
     common_footprint(a, tat_ds)
+    own_footprints(a, tat_ds)
     if not a.no_diag:
         diagnose_clips(tat_ds)
