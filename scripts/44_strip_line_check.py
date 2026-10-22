@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """44_strip_line_check.py -- diagnose straight vertical lines in one era's column of the film strips.
+Note: tests straight-line (seam/tiling) artefacts; not needed for the gtb conifer case (see 45).
 
 Takes the windows from the row labels that 40_film_digital_windows.py printed to its log
 ("row N. <sheet>  E<centre> N<centre> ..."), for one strip (--key, e.g. gtb_pan2000). For each window:
