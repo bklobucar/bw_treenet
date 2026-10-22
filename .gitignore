@@ -22,3 +22,4 @@ data/processed/
 results/inference/
 weights/
 usb_build.log
+*.log

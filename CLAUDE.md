@@ -4,7 +4,7 @@ Maps urban tree canopy change from the 1960s to the present in Malmö, Gothenbur
 
 - Formas-funded to the end of 2027.
 - NAISS allocation `naiss2026-4-1108`, ends 2027-07-01.
-- Repo: github.com/blazklobucar/bw_treenet. Upstream: GrayVictoria/BWTreeNet, cloned at `~/BWTreeNet`.
+- Repo: github.com/bklobucar/bw_treenet. Upstream: GrayVictoria/BWTreeNet, cloned at `~/BWTreeNet`.
 
 ## Where things run
 
