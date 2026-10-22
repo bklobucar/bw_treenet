@@ -19,9 +19,10 @@ of the sheets that measured that DeSO: "public" if all years <= 2005 (Lantmäter
 orthophotos, CC0), "pending" if any year >= 2006 (Ortofoto Nedladdning, CC BY 4.0, awaiting
 Lantmäteriet). Mixed DeSOs are "pending" (conservative).
 
-Only DeSOs with measured area in at least one era are written.
+Only DeSOs with measured area in at least one era are written. kommunkod and kommunnamn are carried
+over from the DeSO layer where those fields exist (DeSO 2025 has kommunkod only).
 
-    python scripts/41_deso_aggregate.py --deso data/DeSO_2025.gpkg
+    python scripts/41_deso_aggregate.py --deso data/ext/DeSO_2025.gpkg
 Writes results/deso/deso_canopy_v19.gpkg (one row per DeSO, columns per era) and
 results/deso/deso_canopy_v19_long.csv (one row per DeSO and era). gis env (GDAL Python bindings).
 """
@@ -41,6 +42,17 @@ RES = 1.0
 OUT_DIR = "results/deso"
 OUT_GPKG = os.path.join(OUT_DIR, "deso_canopy_v19.gpkg")
 OUT_CSV = os.path.join(OUT_DIR, "deso_canopy_v19_long.csv")
+CARRY = ("kommunkod", "kommunnamn")      # copied from the DeSO layer when present
+
+
+def deso_src(deso_ds, layer):
+    return deso_ds.GetLayerByName(layer) if layer else deso_ds.GetLayer(0)
+
+
+def carry_fields(deso_ds, layer):
+    d = deso_src(deso_ds, layer).GetLayerDefn()
+    names = {d.GetFieldDefn(i).GetName() for i in range(d.GetFieldCount())}
+    return [k for k in CARRY if k in names]
 
 
 def index(city, era):
@@ -80,13 +92,15 @@ def measured_frac(prob_path, box):
     return cf.warp(m, box, RES, "average", gdal.GDT_Float32)
 
 
-def deso_layer(deso_ds, layer, field, bbox):
-    """DeSOs intersecting bbox -> (codes, geometries, in-memory layer with integer field rid = 1..N)."""
-    src = deso_ds.GetLayerByName(layer) if layer else deso_ds.GetLayer(0)
+def deso_layer(deso_ds, layer, field, bbox, carry):
+    """DeSOs intersecting bbox -> (codes, carried attributes, geometries,
+    in-memory layer with integer field rid = 1..N)."""
+    src = deso_src(deso_ds, layer)
     src.SetSpatialFilterRect(*bbox)
-    codes, geoms = [], []
+    codes, attrs, geoms = [], [], []
     for f in src:
         codes.append(f.GetField(field)); geoms.append(f.GetGeometryRef().Clone())
+        attrs.append({k: f.GetField(k) for k in carry})
     src.SetSpatialFilter(None)
     drv = ogr.GetDriverByName("MEM") or ogr.GetDriverByName("Memory")
     mem = drv.CreateDataSource("")
@@ -94,7 +108,7 @@ def deso_layer(deso_ds, layer, field, bbox):
     lyr.CreateField(ogr.FieldDefn("rid", ogr.OFTInteger))
     for i, g in enumerate(geoms, start=1):
         f = ogr.Feature(lyr.GetLayerDefn()); f.SetField("rid", i); f.SetGeometry(g); lyr.CreateFeature(f)
-    return codes, geoms, mem
+    return codes, attrs, geoms, mem
 
 
 def rasterise_ids(mem, box):
@@ -119,7 +133,7 @@ def tatort_km2(geom, tat_lyr):
     return a / 1e6
 
 
-def city_rows(city, a, deso_ds, tat_ds):
+def city_rows(city, a, deso_ds, tat_ds, carry):
     series = {}
     idx = {}
     for s, eras in SERIES.items():
@@ -136,7 +150,7 @@ def city_rows(city, a, deso_ds, tat_ds):
     sheets = sorted(set().union(*[set(idx[e]) for e in eras]))
     boxes = [cf.sheet_box(sh) for sh in sheets]
     bbox = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
-    codes, geoms, mem = deso_layer(deso_ds, a.layer, a.field, bbox)
+    codes, attrs, geoms, mem = deso_layer(deso_ds, a.layer, a.field, bbox, carry)
     n = len(codes) + 1
     print(f"\n{city}: eras {eras}, {len(sheets)} sheets, {len(codes)} DeSOs touch the sheet extent")
 
@@ -180,7 +194,7 @@ def city_rows(city, a, deso_ds, tat_ds):
         code = codes[i - 1]
         dk = geoms[i - 1].GetArea() / 1e6
         tk = tatort_km2(geoms[i - 1], tat_lyr)
-        w = dict(desokod=code, city=city, deso_type=code[4], deso_km2=round(dk, 4),
+        w = dict(desokod=code, **attrs[i - 1], city=city, deso_type=code[4], deso_km2=round(dk, 4),
                  deso_tatort_km2=round(tk, 4), geom=geoms[i - 1])
         for s in series:
             ck = common[s][i] * RES ** 2 / 1e6
@@ -189,7 +203,7 @@ def city_rows(city, a, deso_ds, tat_ds):
         for e in eras:
             s = series_of[e]
             mk = meas[e][i] * RES ** 2 / 1e6
-            r = dict(desokod=code, city=city, deso_type=code[4], era=e, series=s,
+            r = dict(desokod=code, **attrs[i - 1], city=city, deso_type=code[4], era=e, series=s,
                      flight_years=";".join(str(y) for y in sorted(years[e][i])) or None,
                      licence_status=licence(years[e][i]),
                      measured_km2=round(mk, 4),
@@ -206,11 +220,12 @@ def city_rows(city, a, deso_ds, tat_ds):
     return rows, wide
 
 
-def write_gpkg(wide, eras, srs):
+def write_gpkg(wide, eras, srs, carry):
     ds = gdal.GetDriverByName("GPKG").Create(OUT_GPKG, 0, 0, 0, gdal.GDT_Unknown)
     lyr = ds.CreateLayer("deso_canopy_v19", srs, ogr.wkbMultiPolygon)
     real = ogr.OFTReal
-    fields = [("desokod", ogr.OFTString), ("city", ogr.OFTString), ("deso_type", ogr.OFTString),
+    fields = [("desokod", ogr.OFTString)] + [(k, ogr.OFTString) for k in carry] + [
+              ("city", ogr.OFTString), ("deso_type", ogr.OFTString),
               ("deso_km2", real), ("deso_tatort_km2", real)]
     for s in SERIES:
         fields += [(f"measured_common_km2_{s}", real), (f"coverage_pct_{s}", real)]
@@ -239,13 +254,16 @@ if __name__ == "__main__":
     a = ap.parse_args()
 
     if not a.overwrite and any(os.path.exists(p) for p in (OUT_GPKG, OUT_CSV)):
-        sys.exit(f"[error] {OUT_GPKG} or {OUT_CSV} exists; pass --overwrite to replace")
+        print(f"[skip] {OUT_GPKG} or {OUT_CSV} exists; nothing done (pass --overwrite to rebuild)")
+        sys.exit(0)
     deso_ds = gdal.OpenEx(a.deso, gdal.OF_VECTOR)
     tat_ds = gdal.OpenEx(cf.TAT, gdal.OF_VECTOR)
+    carry = carry_fields(deso_ds, a.layer)
+    print(f"carrying DeSO fields: {carry or 'none'}")
 
     rows, wide = [], []
     for city in a.cities:
-        r, w = city_rows(city, a, deso_ds, tat_ds)
+        r, w = city_rows(city, a, deso_ds, tat_ds, carry)
         rows += r; wide += w
     if not rows:
         sys.exit("[error] no DeSO with measured area")
@@ -257,8 +275,7 @@ if __name__ == "__main__":
             os.remove(p)
     with open(OUT_CSV, "w", newline="") as fh:
         wr = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n"); wr.writeheader(); wr.writerows(rows)
-    srs = (deso_ds.GetLayerByName(a.layer) if a.layer else deso_ds.GetLayer(0)).GetSpatialRef()
-    write_gpkg(wide, eras, srs)
+    write_gpkg(wide, eras, deso_src(deso_ds, a.layer).GetSpatialRef(), carry)
     print(f"\nwrote {OUT_GPKG} ({len(wide)} DeSOs) and {OUT_CSV} ({len(rows)} rows)")
     for city in a.cities:
         for e in eras:
