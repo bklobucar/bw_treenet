@@ -15,6 +15,7 @@ Maps urban tree canopy change from the 1960s to the present in Malmö, Gothenbur
 
 ### Reaching the cluster
 
+- **Do not run commands on the cluster via `ssh arr` until NAISS has authorised AI-agent access for `naiss2026-4-1108`.** Until then, write the cluster commands as code blocks for Blaž to run himself. This overrides the points below.
 - Use `ssh arr '<cmd>'`. The connection is shared (ControlMaster), and Blaž logs in himself each day with a password plus a code.
 - If `ssh arr` asks for a password, stop and ask him to log in. Never try to authenticate.
 - Move code with git: commit and push here, then `ssh arr 'cd <project dir> && git pull'`. Don't scp scripts.
