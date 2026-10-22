@@ -1,3 +1,5 @@
+# LEGACY (v17): kept exactly as it was run on Arrhenius for the v17
+# Stockholm 1970 assessment. Paths are hardcoded to the cluster project dir.
 """
 09_accuracy_assessment.py
 --------------------------

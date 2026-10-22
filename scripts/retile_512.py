@@ -1,3 +1,6 @@
+# LEGACY (v17): kept exactly as it was run on Arrhenius to build the v17
+# 512px tiles (data/processed_512, since deleted). BASE is hardcoded to the
+# cluster project dir. v18 onwards trains on the 1000px data/processed tiles.
 """
 retile_512.py
 --------------

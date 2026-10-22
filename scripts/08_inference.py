@@ -1,3 +1,6 @@
+# LEGACY (v17): kept exactly as it was run on Arrhenius for v17 evaluation.
+# Paths are hardcoded to the cluster project dir. Production inference is
+# scripts/19_production_inference.py.
 """
 08_inference.py
 ---------------

@@ -1,3 +1,6 @@
+# LEGACY (v17): kept exactly as it was run on Arrhenius for v17 training.
+# Paths are hardcoded to the cluster project dir. v18 onwards (incl. v19)
+# trains with scripts/07_train_v18.py instead.
 import os
 import sys
 import torch
