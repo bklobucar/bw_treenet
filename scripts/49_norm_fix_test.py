@@ -9,6 +9,13 @@
   c  fixed norms: PATCH 1000, OVERLAP 200, every GroupNorm/LayerNorm using the statistics pooled over all
      patches of the sheet (two passes; pass 1 is variant a). Pooled mean = mean of patch means; pooled
      var = mean of patch vars + variance of patch means (= the statistic over the whole sheet).
+  d  water-masked norms: production tiling, per-patch statistics, but every GroupNorm/LayerNorm takes its
+     mean/var over non-water pixels only (19's water mask: hydrography polygons, all_touched, area-
+     averaged to each layer's resolution). Tiles without a CRS get no mask (d = a there).
+  e  shifted-grid ensemble: production inference with the patch grid offset by (0, 0), (0, +400),
+     (+400, 0) and (+400, +400) px (plus patches at 0 and the snapped end so the frame stays covered),
+     the four prob maps averaged. On 1000 px tiles no shift is possible (e = a).
+Seam index of d and e is measured on the production grid.
 Per test sheet and variant: cover % (prob >= 0.6), mean prob (both inside production's valid area,
 prob >= 0), patch cores of the production grid with mean prob < 0.1 over above-median image texture,
 and a seam index: mean |prob(x + 25 m) - prob(x - 25 m)| across the centre lines of the variant's own
@@ -19,10 +26,12 @@ Labelled sets, scored at 0.6 inside production's valid area:
   * v19's validation set malmo/tiles_1970 (held out of training; 1000 px tiles);
   * a sample of modern tiles per city (in training). For tiles, b reflect-pads to 2000 px as 19 would, and
     c pools the statistics over all tiles of the set.
-PNGs: results/norm_fix_test/639_31_55_<era>.png around the 639_31_55 window (top row image | a | b | c
-probability, viridis 0-1, grey = prob < 0; bottom row the binary masks). Table: results/norm_fix_test/summary.csv.
+PNGs: results/norm_fix_test/639_31_55_<era>_<variants>.png around the 639_31_55 window (top row image |
+one probability column per variant, viridis 0-1, grey = prob < 0; bottom row the binary masks).
+Table: results/norm_fix_test/summary_<variants>.csv.
 
-    python scripts/49_norm_fix_test.py
+    python scripts/49_norm_fix_test.py                      # a b c
+    python scripts/49_norm_fix_test.py --variants a d e
 bwtreenet env (torch + rasterio + geopandas), one GPU. Existing outputs are not replaced without --overwrite.
 """
 import argparse, csv, glob, importlib, os, sys, time
@@ -36,7 +45,11 @@ p19 = m47.p19
 
 OUT_DIR = "results/norm_fix_test"
 THR = p19.THRESHOLD
-VARIANTS = {"a": (1000, 200, False), "b": (2000, 400, False), "c": (1000, 200, True)}
+VARIANTS = {"a": "production 1000/200", "b": "patches 2000/400", "c": "fixed sheet norms",
+            "d": "water-masked norms", "e": "shifted-grid ensemble"}
+GRID = {"a": (1000, 200), "b": (2000, 400), "c": (1000, 200), "d": (1000, 200), "e": (1000, 200)}
+SHIFTS = [(0, 0), (0, 400), (400, 0), (400, 400)]       # (y, x) grid offsets for e
+_HYDRO = {}
 SHEETS = ["gtb:2010:639_31_55", "gtb:2005:639_31_55",
           "sth:2010:657_67_00", "sth:2010:658_67_00", "sth:2005:657_67_00", "sth:2005:658_67_00",
           "malmo:2010:616_37_00", "gtb:pan2000:640_30_05"]
@@ -65,47 +78,88 @@ class Pool:
         return out
 
 
-def infer(ctx, image, patch, overlap, frozen=None, pool=None):
-    """19's infer_frame with a chosen patch size; frozen = fixed norm stats; pool collects per-patch stats."""
+def water_mask(city, shape, transform, crs):
+    """19's output water mask (hydrography polygons, all_touched) on a raster grid; None without a CRS."""
+    if crs is None or city not in p19.HYDRO or not os.path.exists(p19.HYDRO[city]):
+        return None
+    import geopandas as gpd
+    from rasterio.features import rasterize
+    from rasterio.transform import array_bounds
+    if city not in _HYDRO:
+        _HYDRO[city] = gpd.read_file(p19.HYDRO[city])
+    h = _HYDRO[city]
+    h = h.to_crs(crs) if h.crs != crs else h
+    w, s, e, n = array_bounds(shape[0], shape[1], transform)
+    sub = h.cx[w:e, s:n]
+    shp = [(g, 1) for g in sub.geometry if g is not None and not g.is_empty]
+    if not shp:
+        return np.zeros(shape, bool)
+    return rasterize(shp, out_shape=shape, transform=transform, fill=0, dtype=np.uint8, all_touched=True) > 0
+
+
+def grid(total, patch, stride, off):
+    """19's positions, optionally with the grid shifted by off px (0 and the snapped end kept for coverage)."""
+    pos = p19.positions(total, patch, stride)
+    if off and total > patch:
+        pos = sorted({0, total - patch} | set(range(off, total - patch + 1, stride)))
+    return pos
+
+
+def infer(ctx, image, patch, overlap, frozen=None, pool=None, land=None, off=(0, 0)):
+    """19's infer_frame with a chosen patch size; frozen = fixed norm stats; pool collects per-patch stats;
+    land = land weight (0 water, 1 land) for water-masked norms; off = (y, x) grid offset."""
     model, dev, torch, sw = ctx
     H, W = image.shape
     pin = image
     ph, pw = max(0, patch - H), max(0, patch - W)
     if ph or pw:
         pin = np.pad(image, ((0, ph), (0, pw)), mode="reflect")
+        if land is not None:
+            land = np.pad(land, ((0, ph), (0, pw)), mode="reflect")
     pH, pW = pin.shape
     win, stride = p19.taper(patch, overlap), patch - overlap
     acc = np.zeros((pH, pW), np.float32)
     wsum = np.zeros((pH, pW), np.float32)
     sw.mode, sw.frozen = ("apply", frozen) if frozen is not None else ("off", {})
-    for y in p19.positions(pH, patch, stride):
-        for x in p19.positions(pW, patch, stride):
+    if land is not None:
+        sw.mode = "masked"
+    for y in grid(pH, patch, stride, off[0]):
+        for x in grid(pW, patch, stride, off[1]):
+            if land is not None:
+                sw.mask = torch.from_numpy(np.ascontiguousarray(land[y:y + patch, x:x + patch], np.float32))[None, None].to(dev)
             pr = m47.run_patch(model, torch, dev, pin[y:y + patch, x:x + patch])
             if pool is not None:
                 pool.add(sw.last)
             acc[y:y + patch, x:x + patch] += pr * win
             wsum[y:y + patch, x:x + patch] += win
-    sw.mode = "off"
+    sw.mode, sw.mask = "off", None
     return (acc / np.maximum(wsum, 1e-8))[:H, :W]
 
 
-def run_variants(ctx, image, variants):
-    """-> ({variant: prob}, {variant: seconds}, {variant: peak GPU GB})."""
+def run_variants(ctx, image, variants, land=None, pooled=None):
+    """-> ({variant: prob}, {variant: seconds}, {variant: peak GPU GB}).
+    land: land weight for d (None -> d = a); pooled: precomputed stats for c (else pooled over this image)."""
     torch = ctx[2]
     probs, secs, mem = {}, {}, {}
-    pooled = None
-    for v in sorted(variants, key=lambda v: v != "a"):        # a first: its pass is c's pass 1
-        patch, overlap, fixed = VARIANTS[v]
+    for v in sorted(variants, key=lambda v: v != "a"):        # a first: its pass is c's pass 1 and e's 1st grid
         torch.cuda.reset_peak_memory_stats()
         t0 = time.time()
-        if fixed:
+        if v == "a":
+            pool = Pool()
+            probs[v] = infer(ctx, image, 1000, 200, pool=pool)
+            pooled = pooled or pool.stats()
+        elif v == "b":
+            probs[v] = infer(ctx, image, 2000, 400)
+        elif v == "c":
             if pooled is None:
-                pool = Pool(); infer(ctx, image, patch, overlap, pool=pool); pooled = pool.stats()
-            probs[v] = infer(ctx, image, patch, overlap, frozen=pooled)
-        elif v == "a" and "c" in variants:
-            pool = Pool(); probs[v] = infer(ctx, image, patch, overlap, pool=pool); pooled = pool.stats()
-        else:
-            probs[v] = infer(ctx, image, patch, overlap)
+                pool = Pool(); infer(ctx, image, 1000, 200, pool=pool); pooled = pool.stats()
+            probs[v] = infer(ctx, image, 1000, 200, frozen=pooled)
+        elif v == "d":
+            probs[v] = infer(ctx, image, 1000, 200, land=land)
+        elif v == "e":
+            runs = [probs["a"] if off == (0, 0) and "a" in probs else infer(ctx, image, 1000, 200, off=off)
+                    for off in SHIFTS]
+            probs[v] = np.mean(runs, axis=0)
         secs[v], mem[v] = time.time() - t0, torch.cuda.max_memory_allocated() / 1e9
     return probs, secs, mem
 
@@ -191,7 +245,7 @@ def save_png(path, image, valid, probs, variants):
 
 
 def sheets_part(a, ctx, rows):
-    print(f"\n== test sheets; variants {a.variants}  (a = production 1000/200, b = 2000/400, c = fixed sheet norms)")
+    print(f"\n== test sheets; variants " + ", ".join(f"{v} = {VARIANTS[v]}" for v in a.variants))
     print(f"   {'sheet':28s} {'v':2s} {'cover %':>8s} {'mean p':>7s} {'low cores':>10s} {'seam':>7s} {'within':>7s} "
           f"{'index':>6s} {'sec':>6s} {'GPU GB':>7s}")
     for spec in a.sheets:
@@ -202,15 +256,18 @@ def sheets_part(a, ctx, rows):
         img_p, prob_p, is_rgb = fr
         image = m47.read_image(img_p, is_rgb)
         with rasterio.open(prob_p) as s:
-            valid, tr = s.read(1) >= 0, s.transform
-        probs, secs, mem = run_variants(ctx, image, a.variants)
+            valid, tr, crs = s.read(1) >= 0, s.transform, s.crs
+        water = water_mask(city, image.shape, tr, crs) if "d" in a.variants else None
+        if water is not None:
+            print(f"   {city} {era} {sheet}: water {100 * water.mean():.1f}% of the frame")
+        probs, secs, mem = run_variants(ctx, image, a.variants, land=None if water is None else (~water).astype(np.float32))
         cores = texture_cores(image, valid)
         name = f"{city} {era} {os.path.basename(img_p)[:-4]}"
         for v in a.variants:
             p = probs[v]
             pv = p[valid]
             low = sum(1 for cs, ok, tex in cores if tex and p[cs][ok].mean() < LOW)
-            s, c, idx = seam_index(p, valid, *VARIANTS[v][:2])
+            s, c, idx = seam_index(p, valid, *GRID[v])
             print(f"   {name:28s} {v:2s} {100 * (pv >= THR).mean():8.2f} {pv.mean():7.3f} {low:5d}/{len(cores):<4d} "
                   f"{s:7.4f} {c:7.4f} {idx:6.2f} {secs[v]:6.0f} {mem[v]:7.1f}")
             rows.append(dict(kind="sheet", name=name, variant=v, cover_pct=round(100 * (pv >= THR).mean(), 3),
@@ -218,7 +275,7 @@ def sheets_part(a, ctx, rows):
                              seam=round(s, 5), within=round(c, 5), seam_index=round(idx, 3),
                              seconds=round(secs[v]), gpu_gb=round(mem[v], 1)))
         if (city, sheet) == WINDOW[:2]:
-            out = os.path.join(OUT_DIR, f"{sheet}_{era}.png")
+            out = os.path.join(OUT_DIR, f"{sheet}_{era}_{''.join(a.variants)}.png")
             half = int(round(a.png_size / 2 / tr.a))
             cx, cy = int((WINDOW[2] - tr.c) / tr.a), int((tr.f - WINDOW[3]) / abs(tr.e))
             sl = (slice(max(cy - half, 0), cy + half), slice(max(cx - half, 0), cx + half))
@@ -256,7 +313,8 @@ def clips_part(a, ctx, rows):
             image = m47.read_image(f, is_rgb)
             with rasterio.open(prob_p) as s:
                 valid = s.read(1) >= 0
-            probs, _, _ = run_variants(ctx, image, a.variants)
+            water = water_mask(city, image.shape, tr, crs) if "d" in a.variants else None
+            probs, _, _ = run_variants(ctx, image, a.variants, land=None if water is None else (~water).astype(np.float32))
             w = from_bounds(*ib, transform=tr).round_offsets().round_lengths()
             sl = (slice(w.row_off, w.row_off + w.height), slice(w.col_off, w.col_off + w.width))
             wtr = rasterio.windows.transform(w, tr)
@@ -281,7 +339,8 @@ def print_score(name, v, sc, rows):
 def tiles_part(a, ctx, rows):
     sets = [("malmo/tiles_1970", "v19 validation (held out)", 0)] + \
            [(f"{c}/tiles", "modern sample (in training)", a.tiles_n) for c in ("malmo", "gtb", "sth")]
-    print("\n== labelled tiles (b: reflect-padded to 2000 px as 19 would; c: norms pooled over the set)")
+    print("\n== labelled tiles (b: reflect-padded to 2000 px as 19 would; c: norms pooled over the set; "
+          "d: water mask if the tile has a CRS; e = a on 1000 px tiles)")
     for rel, what, n in sets:
         d = os.path.join(p19.HERE, "data/processed", rel)
         names = sorted(os.listdir(os.path.join(d, "labels"))) if os.path.isdir(os.path.join(d, "labels")) else []
@@ -290,22 +349,32 @@ def tiles_part(a, ctx, rows):
             names = names[::len(names) // n][:n]
         if not names:
             print(f"   {rel}: no tiles"); continue
-        imgs, labs = [], []
+        imgs, labs, lands = [], [], []
+        city = rel.split("/")[0]
         for x in names:
             with rasterio.open(os.path.join(d, "images", x)) as s:
                 imgs.append(s.read(1).astype(np.float32))
+                wm = water_mask(city, (s.height, s.width), s.transform, s.crs) if "d" in a.variants else None
+                lands.append(None if wm is None else (~wm).astype(np.float32))
             with rasterio.open(os.path.join(d, "labels", x)) as s:
                 labs.append(s.read(1) > 0)
+        if "d" in a.variants:
+            nm = sum(l is not None for l in lands)
+            wf = [100 * (1 - l.mean()) for l in lands if l is not None]
+            print(f"   {rel}: water mask for {nm}/{len(lands)} tiles" + (f", mean water {np.mean(wf):.1f}%" if wf else ""))
         conf = {v: np.zeros(6, np.int64) for v in a.variants}
         pooled, pool = None, Pool()
         preds = {v: [] for v in a.variants}
-        for im in imgs:                                     # a (and c's pass 1)
-            if "a" in a.variants or "c" in a.variants:
+        for im, ld in zip(imgs, lands):                     # a (and c's pass 1)
+            if "a" in a.variants or "c" in a.variants or "e" in a.variants:
                 pa = infer(ctx, im, 1000, 200, pool=pool)
-                if "a" in a.variants:
-                    preds["a"].append(pa)
+                for v in ("a", "e"):                        # e = a: a 1000 px tile cannot be shifted
+                    if v in a.variants:
+                        preds[v].append(pa)
             if "b" in a.variants:
                 preds["b"].append(infer(ctx, im, 2000, 400))
+            if "d" in a.variants:
+                preds["d"].append(infer(ctx, im, 1000, 200, land=ld))
         if "c" in a.variants:
             pooled = pool.stats()
             preds["c"] = [infer(ctx, im, 1000, 200, frozen=pooled) for im in imgs]
@@ -317,7 +386,7 @@ def tiles_part(a, ctx, rows):
 
 def main(a):
     os.makedirs(OUT_DIR, exist_ok=True)
-    out = os.path.join(OUT_DIR, "summary.csv")
+    out = os.path.join(OUT_DIR, f"summary_{''.join(a.variants)}.csv")
     if os.path.exists(out) and not a.overwrite:
         sys.exit(f"{out} exists; pass --overwrite to replace it")
     model, dev, torch = p19.load_model()

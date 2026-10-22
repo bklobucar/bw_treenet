@@ -70,10 +70,12 @@ def read_image(path, is_rgb, win=None):
 # ---- normalisation hooks ------------------------------------------------------------------------
 class NormSwap:
     """Re-implements every GroupNorm/LayerNorm forward so its statistics can be recorded and replayed.
-    mode "off": normal behaviour (stats still recorded in .last); "apply": use .frozen stats."""
+    mode "off": normal behaviour (stats still recorded in .last); "apply": use .frozen stats;
+    "masked": stats over the pixels weighted by .mask (1, 1, H, W) at input resolution, area-averaged
+    down to each layer's resolution (falls back to unmasked stats if < 1% of the weight is left)."""
 
     def __init__(self, model, torch):
-        self.torch, self.mode, self.last, self.frozen = torch, "off", {}, {}
+        self.torch, self.mode, self.last, self.frozen, self.mask = torch, "off", {}, {}, None
         nn = torch.nn
         self.layers = [(n, m) for n, m in model.named_modules() if isinstance(m, (nn.GroupNorm, nn.LayerNorm))]
         for name, m in self.layers:
@@ -82,6 +84,24 @@ class NormSwap:
     def _make(self, name, m):
         torch = self.torch
         is_gn = isinstance(m, torch.nn.GroupNorm)
+
+        def masked_stats(x, xr):
+            """Weighted mean/var with the shapes of the unmasked stats, or None to fall back."""
+            wgt = torch.nn.functional.interpolate(self.mask, size=x.shape[-2:], mode="area")
+            if wgt.sum() < 0.01 * wgt.numel():
+                return None
+            if is_gn:
+                N, C = x.shape[:2]
+                x5 = x.reshape(N, m.num_groups, C // m.num_groups, *x.shape[-2:])
+                w5, dims = wgt.reshape(1, 1, 1, *x.shape[-2:]), (2, 3, 4)
+                den = wgt.sum() * (C // m.num_groups)
+                mean = (x5 * w5).sum(dims, keepdim=True) / den
+                var = (((x5 - mean) ** 2) * w5).sum(dims, keepdim=True) / den
+                return mean.reshape(N, m.num_groups, 1), var.reshape(N, m.num_groups, 1)
+            dims = tuple(range(x.dim() - len(m.normalized_shape), x.dim()))
+            den = wgt.sum() * x.shape[1]
+            mean = (x * wgt).sum(dims, keepdim=True) / den
+            return mean, (((x - mean) ** 2) * wgt).sum(dims, keepdim=True) / den
 
         def fwd(x):
             if is_gn:
@@ -92,6 +112,10 @@ class NormSwap:
                 dims = tuple(range(x.dim() - len(m.normalized_shape), x.dim()))
                 xr = x
                 mean, var = x.mean(dims, keepdim=True), x.var(dims, unbiased=False, keepdim=True)
+            if self.mode == "masked" and self.mask is not None:
+                ms = masked_stats(x, xr)
+                if ms is not None:
+                    mean, var = ms
             self.last[name] = (mean.detach(), var.detach())
             if self.mode == "apply":
                 mean, var = self.frozen[name]
