@@ -34,10 +34,10 @@ DEFAULT_INPUT_DIR  = os.path.expanduser(
 DEFAULT_OUTPUT_DIR = os.path.expanduser(
     "/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/results/inference/malmo_1960s_v12/")
 DEFAULT_WEIGHTS    = os.path.expanduser(
-    "/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/models/bwtreenet_v12_best.pt")
+    "/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/models/bwtreenet_v17_best.pt")
 
-PATCH_SIZE  = 1000   # pixels — must match training
-OVERLAP     = 200     # pixels overlap on each side
+PATCH_SIZE  = 512    # pixels — must match training
+OVERLAP     = 100    # pixels overlap on each side
 THRESHOLD   = 0.5    # probability threshold for binary map
 N_CLASSES   = 2
 DEVICE      = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

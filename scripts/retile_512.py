@@ -33,21 +33,22 @@ MIN_COVER    = 0.10   # minimum tree cover fraction to keep tile
 AUGMENT      = True   # flip augmentation on positive tiles
 
 # source tile directories (1000x1000 tiles)
+# tuple: (src_dir, prefix, min_cover_override or None)
 SOURCE_DIRS = [
-    # modern
-    (f"{BASE}/data/processed/malmo/tiles",   "malmo"),
-    (f"{BASE}/data/processed/gtb/tiles",     "gtb"),
-    (f"{BASE}/data/processed/sth/tiles",     "sth"),
-    # historical
-    (f"{BASE}/data/processed/malmo/tiles_1959", "malmo_1959"),
-    (f"{BASE}/data/processed/malmo/tiles_1960", "malmo_1960"),
-    (f"{BASE}/data/processed/malmo/tiles_1970", "malmo_1970"),
-    (f"{BASE}/data/processed/malmo/tiles_1990", "malmo_1990"),
-    (f"{BASE}/data/processed/gtb/tiles_1960",   "gtb_1960"),
-    (f"{BASE}/data/processed/gtb/tiles_1970",   "gtb_1970"),
-    (f"{BASE}/data/processed/gtb/tiles_1990",   "gtb_1990"),
-    (f"{BASE}/data/processed/sth/tiles_1960",   "sth_1960"),
-    (f"{BASE}/data/processed/sth/tiles_1990",   "sth_1990"),
+    # modern — use default MIN_COVER (0.10)
+    (f"{BASE}/data/processed/malmo/tiles",   "malmo",      None),
+    (f"{BASE}/data/processed/gtb/tiles",     "gtb",        None),
+    (f"{BASE}/data/processed/sth/tiles",     "sth",        None),
+    # historical — use lower threshold (0.03) to keep more tiles
+    (f"{BASE}/data/processed/malmo/tiles_1959", "malmo_1959", 0.03),
+    (f"{BASE}/data/processed/malmo/tiles_1960", "malmo_1960", 0.03),
+    (f"{BASE}/data/processed/malmo/tiles_1970", "malmo_1970", 0.03),
+    (f"{BASE}/data/processed/malmo/tiles_1990", "malmo_1990", 0.03),
+    (f"{BASE}/data/processed/gtb/tiles_1960",   "gtb_1960",   0.03),
+    (f"{BASE}/data/processed/gtb/tiles_1970",   "gtb_1970",   0.03),
+    (f"{BASE}/data/processed/gtb/tiles_1990",   "gtb_1990",   0.03),
+    (f"{BASE}/data/processed/sth/tiles_1960",   "sth_1960",   0.03),
+    (f"{BASE}/data/processed/sth/tiles_1990",   "sth_1990",   0.03),
 ]
 
 # output base directory
@@ -174,9 +175,11 @@ def main(args):
     total_kept = 0
     total_aug  = 0
 
-    for src_dir, prefix in dirs:
-        print(f"Processing {prefix}...")
-        k, a = process_source_dir(src_dir, prefix, min_cover, AUGMENT, args.test)
+    for entry in dirs:
+        src_dir, prefix, cover_override = entry
+        effective_cover = cover_override if cover_override is not None else min_cover
+        print(f"Processing {prefix} (min_cover={effective_cover*100:.0f}%)...")
+        k, a = process_source_dir(src_dir, prefix, effective_cover, AUGMENT, args.test)
         total_kept += k
         total_aug  += a
 

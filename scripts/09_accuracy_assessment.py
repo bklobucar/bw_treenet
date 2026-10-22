@@ -141,8 +141,8 @@ def main(args):
     output    = args.output
     threshold = args.threshold
 
-    val_clip = os.path.join(val_dir, "mmo_clip.tif")
-    val_shp  = os.path.join(val_dir, "labels_malmo_1959.shp")
+    val_clip = os.path.join(val_dir, "sth_1970_clip.tif")
+    val_shp  = os.path.join(val_dir, "labels_sth_1970.shp")
 
     print(f"Validation clip: {val_clip}")
     print(f"Validation labels: {val_shp}")
