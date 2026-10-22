@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, random_split, ConcatDataset
 from pathlib import Path
 
 # add BWTreeNet to path
-sys.path.insert(0, os.path.expanduser("~/bw_treenet/BWTreeNet/GuiTest"))
+sys.path.insert(0, os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/BWTreeNet/GuiTest"))
 
 from model.BWTreeNet import BWTreeNet
 from loss.lossfunction import IoULoss
@@ -17,40 +17,40 @@ from util.augmentation import (RandomFlip, RandomBrightness, RandomNoise,
 
 # ── config ─────────────────────────────────────────────────────────────────
 IMAGES_DIRS = [
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1960/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth_1960/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1959/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1960/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1970/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1990/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1970/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1990/images/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth_1990/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1960/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth_1960/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1959/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1960/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1970/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1990/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1970/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1990/images/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth_1990/images/"),
 ]
 LABELS_DIRS = [
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1960/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth_1960/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1959/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1960/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1970/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/malmo_1990/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1970/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/gtb_1990/labels/"),
-    os.path.expanduser("~/bw_treenet/data/processed_512/sth_1990/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1960/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth_1960/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1959/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1960/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1970/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/malmo_1990/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1970/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/gtb_1990/labels/"),
+    os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/data/processed_512/sth_1990/labels/"),
 ]
-WEIGHTS_DIR = os.path.expanduser("~/bw_treenet/models/")
-LOG_FILE    = os.path.expanduser("~/bw_treenet/results/training_log_v16.csv")
+WEIGHTS_DIR = os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/models/")
+LOG_FILE    = os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/results/training_log_v17.csv")
 PRETRAINED  = os.path.expanduser(
-    "~/bw_treenet/models/NONE_train_from_scratch")  # resume from v3 best
+    "/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/models/NONE_train_from_scratch")  # resume from v3 best
 
 Path(WEIGHTS_DIR).mkdir(parents=True, exist_ok=True)
-Path(os.path.expanduser("~/bw_treenet/results")).mkdir(parents=True, exist_ok=True)
+Path(os.path.expanduser("/nobackup/proj/disk/naiss2026-4-1108/personal/bklobucar/bw_treenet/results")).mkdir(parents=True, exist_ok=True)
 
 EPOCHS      = 80           # cap at 40; ReduceLROnPlateau will manage descent
 BATCH_SIZE  = 16
@@ -133,7 +133,6 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     factor=SCHED_FACTOR,
     patience=SCHED_PATIENCE,
     min_lr=SCHED_MIN_LR,
-    verbose=True
 )
 
 # ── logging ────────────────────────────────────────────────────────────────

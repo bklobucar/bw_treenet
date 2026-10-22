@@ -1,0 +1,120 @@
+"""
+20_aggregate_canopy.py -- compute canopy cover per city-era from ALL saved
+inference rasters, not just the frames processed in the last session.
+
+The per-run totals printed by 19_production_inference.py only cover frames
+processed in that invocation, so after resumed runs they are partial. This reads
+every <stem>_canopy.tif and <stem>_prob.tif in results/inference_v19/ and pools
+them properly.
+
+Per city-era it reports:
+  * valid area (km^2) -- pixels inside the tätort mask (prob != nodata)
+  * canopy area (km^2) and canopy cover (%) at the production threshold
+  * frame count, and which frames are missing relative to the source dir
+    (so unreadable-frame gaps are recorded, not silently dropped)
+
+Writes results/canopy_change_v19.csv and prints a change table.
+
+Run (any node, no GPU needed):
+    python 20_aggregate_canopy.py
+"""
+import os, glob, csv
+import numpy as np
+import rasterio
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INF_ROOT = os.path.join(HERE, "results", "inference_v19")
+OUT_CSV  = os.path.join(HERE, "results", "canopy_change_v19.csv")
+
+SOURCES = {
+    ("malmo", "1960"): "data/raw/malmo/1960_OF_gray_mmo",
+    ("malmo", "1970"): "data/raw/malmo/1970_OF_gray_mmo",
+    ("malmo", "1990"): "data/raw/malmo/1990_OF_gray_mmo",
+    ("gtb",   "1960"): "data/raw/gtb/1960_OF_gray_gtb",
+    ("gtb",   "1970"): "data/raw/gtb/1970_OF_gray_gtb",
+    ("gtb",   "1990"): "data/raw/gtb/1990_OF_rgb_gtb",
+    ("sth",   "1960"): "data/raw/sth/1960_OF_gray_sth",
+    ("sth",   "1970"): "data/raw/sth/1970_OF_gray_sth",
+    ("sth",   "1990"): "data/raw/sth/1990_OF_gray_sth",
+}
+CITIES = ["malmo", "gtb", "sth"]
+ERAS   = ["1960", "1970", "1990"]
+
+rows = []
+table = {}   # (city, era) -> pct
+
+for city in CITIES:
+    for era in ERAS:
+        d = os.path.join(INF_ROOT, f"{city}_{era}")
+        canopy_files = sorted(glob.glob(os.path.join(d, "*_canopy.tif")))
+        if not canopy_files:
+            print(f"[skip] no outputs for {city} {era}")
+            continue
+
+        valid_px = 0; canopy_px = 0; px_area_m2 = None
+        corrupt = []
+        for cf in canopy_files:
+            pf = cf.replace("_canopy.tif", "_prob.tif")
+            try:
+                with rasterio.open(cf) as s:
+                    can = s.read(1)
+                    if px_area_m2 is None:
+                        px_area_m2 = abs(s.transform.a * s.transform.e)
+                with rasterio.open(pf) as s:
+                    prob = s.read(1)
+                valid = prob >= 0
+            except Exception as e:
+                corrupt.append(os.path.basename(cf).replace("_canopy.tif", ""))
+                continue
+            valid_px  += int(valid.sum())
+            canopy_px += int((can > 0).sum())
+
+        # which source frames have no output? (unreadable / not yet run)
+        src_dir = os.path.join(HERE, SOURCES[(city, era)])
+        src_stems = {os.path.splitext(os.path.basename(f))[0]
+                     for f in glob.glob(os.path.join(src_dir, "*.tif"))
+                     if not f.endswith(".aux.xml")}
+        out_stems = {os.path.basename(f).replace("_canopy.tif", "") for f in canopy_files}
+        missing = sorted(src_stems - out_stems) + [c + " (CORRUPT OUTPUT)" for c in corrupt]
+
+        pct = 100 * canopy_px / max(valid_px, 1)
+        valid_km2  = valid_px  * px_area_m2 / 1e6
+        canopy_km2 = canopy_px * px_area_m2 / 1e6
+        table[(city, era)] = pct
+        rows.append(dict(city=city, era=era, frames=len(canopy_files),
+                         missing_frames=len(missing),
+                         missing=";".join(missing),
+                         valid_km2=round(valid_km2, 2),
+                         canopy_km2=round(canopy_km2, 2),
+                         canopy_pct=round(pct, 2)))
+        print(f"{city:>6} {era}  {len(canopy_files):>3} frames  "
+              f"valid {valid_km2:7.2f} km2  canopy {canopy_km2:6.2f} km2  "
+              f"= {pct:5.2f}%"
+              + (f"   [{len(missing)} frames missing: {', '.join(missing)}]" if missing else ""))
+
+os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
+with open(OUT_CSV, "w", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+    w.writeheader(); w.writerows(rows)
+
+print("\n" + "=" * 60)
+print("CANOPY COVER (%) within 2023 tätort extent, v19, threshold 0.6")
+print("=" * 60)
+print(f"{'':>12}" + "".join(f"{e:>10}" for e in ERAS) + f"{'1960->1990':>14}")
+for city in CITIES:
+    vals = [table.get((city, e)) for e in ERAS]
+    cells = "".join(f"{v:>10.2f}" if v is not None else f"{'-':>10}" for v in vals)
+    delta = (f"{vals[2]-vals[0]:>+14.2f}" if vals[0] is not None and vals[2] is not None
+             else f"{'-':>14}")
+    print(f"{city:>12}{cells}{delta}")
+
+print(f"\n[done] wrote {OUT_CSV}")
+print("""
+Caveats to attach to these numbers:
+  * study area = 2023 tätort boundary held constant across eras (by design)
+  * tätort only -- harbour/canal water inside the boundary is NOT masked and
+    is a known false-positive source, especially for gtb and sth
+  * unreadable frames are gaps, listed in the CSV; per-era coverage differs
+  * IoU ~0.58-0.65 on held-out benchmarks; sub-percentage-point differences
+    between eras are within plausible systematic error
+""")
