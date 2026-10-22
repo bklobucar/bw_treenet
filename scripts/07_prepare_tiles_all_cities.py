@@ -26,7 +26,7 @@ CITIES = {
     },
     "gtb": {
         "rgbi_dir":      os.path.expanduser(
-            "~/bw_treenet/data/raw/gtb/rgbi_latest"),
+            "~/bw_treenet/data/raw/gtb/rgbi_latest/rgbi_latest"),  # Gothenburg 2024 (orto-g2-2024, 2024-05-18); verified r>0.95
         "canopy_raster": os.path.expanduser(
             "~/bw_treenet/data/processed/gtb/canopy_binary_05m.tif"),
         "out_images":    os.path.expanduser(
@@ -44,7 +44,7 @@ CITIES = {
             "~/bw_treenet/data/processed/gtb/tiles/images/"),
         "out_labels":    os.path.expanduser(
             "~/bw_treenet/data/processed/gtb/tiles/labels/"),
-        "year_filter":   "2016",
+        "year_filter":   "2016",  # tiles made from orto-g2-2016 (2016-05-12); those files are no longer in IRF_latest_gtb
         "skip_if_exists": False,
     },
     "sth": {
