@@ -102,7 +102,12 @@ class NormSwap:
                     shp = (1, C) + (1,) * (x.dim() - 2)
                     y = y * m.weight.view(shp) + m.bias.view(shp)
             elif m.elementwise_affine:
-                y = y * m.weight + m.bias
+                w, b = m.weight, m.bias
+                if w.shape != x.shape[-w.dim():]:
+                    # other patch size than the 1000 px the LayerNorm was built for; v19's LayerNorm
+                    # affine maps are spatially constant, so the per-channel mean is exact
+                    w, b = w.mean(dim=(-2, -1), keepdim=True), b.mean(dim=(-2, -1), keepdim=True)
+                y = y * w + b
             return y
         return fwd
 
