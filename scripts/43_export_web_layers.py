@@ -18,6 +18,7 @@ The manifest always lists every canopy/imagery file present, whichever layer --w
 
     python scripts/43_export_web_layers.py                  # canopy only (default)
     python scripts/43_export_web_layers.py --what imagery   # or: --what all
+    python scripts/43_export_web_layers.py --inf results/inference_v19_hydro2 --out results/web_v01_hydro2
 gis env (GDAL Python bindings).
 """
 import argparse, csv, datetime, importlib, os, shutil, sys, tempfile
@@ -103,6 +104,7 @@ def row(layer, city, era, path, years, n_sheets):
                 flight_years=";".join(map(str, years)), stac_collection=";".join(coll),
                 licence=LICENCE[st], licence_status=st,
                 model=MODEL if layer == "canopy" else "", inference_resolution_m=INF_RES if layer == "canopy" else "",
+                inference=os.path.basename(os.path.normpath(cf.INF)) if layer == "canopy" else "",
                 sheets=n_sheets, size_mb=round(os.path.getsize(path) / 1e6, 1),
                 date=datetime.date.fromtimestamp(os.path.getmtime(path)).isoformat())
 
@@ -169,4 +171,10 @@ if __name__ == "__main__":
     ap.add_argument("--what", choices=["canopy", "imagery", "all"], default="canopy")
     ap.add_argument("--cities", nargs="+", default=cf.CITIES)
     ap.add_argument("--overwrite", action="store_true", help="rebuild COGs that already exist")
-    main(ap.parse_args())
+    ap.add_argument("--inf", default=cf.INF, help="inference root (default results/inference_v19; "
+                    "results/inference_v19_hydro2 for the hydro_v2 re-masked maps from 51)")
+    ap.add_argument("--out", default=OUT, help="output directory (default results/web_v01)")
+    a = ap.parse_args()
+    cf.INF, OUT = a.inf, a.out
+    print(f"inference maps from {cf.INF}/, outputs to {OUT}/")
+    main(a)

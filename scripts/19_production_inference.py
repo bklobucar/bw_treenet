@@ -42,10 +42,18 @@ OUT_ROOT  = os.path.join(HERE, "results", "inference_v19")
 
 # hydrography per city (folders as downloaded: 1=STH, 2=Malmo, 3=GTB)
 HYDRO = {
-    "malmo": os.path.join(HERE, "data/hydro/2/mv_south.shp"),
-    "gtb":   os.path.join(HERE, "data/hydro/3/mv_south.shp"),
-    "sth":   os.path.join(HERE, "data/hydro/1/mv_south.shp"),
+    # hydro_v2 (Oct 2026): Fastighetskartan water (GET), full study-area extents; sth = mv_south + mv_middle
+    "malmo": os.path.join(HERE, "data/hydro_v2/malmo_water.gpkg"),
+    "gtb":   os.path.join(HERE, "data/hydro_v2/gtb_water.gpkg"),
+    "sth":   os.path.join(HERE, "data/hydro_v2/sth_water.gpkg"),
 }
+# Fallback, the original downloads (water polygons cover only part of each study area, Stockholm
+# only its centre; every v19 run up to Oct 2026 was masked with these):
+# HYDRO = {
+#     "malmo": os.path.join(HERE, "data/hydro/2/mv_south.shp"),
+#     "gtb":   os.path.join(HERE, "data/hydro/3/mv_south.shp"),
+#     "sth":   os.path.join(HERE, "data/hydro/1/mv_south.shp"),
+# }
 
 # (city, era) -> source imagery directory, and whether it needs RGB->grayscale
 SOURCES = {

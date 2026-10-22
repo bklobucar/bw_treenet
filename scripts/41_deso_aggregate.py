@@ -23,6 +23,8 @@ Only DeSOs with measured area in at least one era are written. kommunkod and kom
 over from the DeSO layer where those fields exist (DeSO 2025 has kommunkod only).
 
     python scripts/41_deso_aggregate.py --deso data/ext/DeSO_2025.gpkg
+    python scripts/41_deso_aggregate.py --deso data/ext/DeSO_2025.gpkg --inf results/inference_v19_hydro2 \
+        --out-dir results/deso_hydro2          # from the hydro_v2 re-masked maps (51)
 Writes results/deso/deso_canopy_v19.gpkg (one row per DeSO, columns per era) and
 results/deso/deso_canopy_v19_long.csv (one row per DeSO and era). gis env (GDAL Python bindings).
 """
@@ -250,8 +252,16 @@ if __name__ == "__main__":
     ap.add_argument("--layer", default="DeSO_2025")
     ap.add_argument("--field", default="desokod")
     ap.add_argument("--cities", nargs="+", default=cf.CITIES)
-    ap.add_argument("--overwrite", action="store_true", help="replace existing outputs in results/deso/")
+    ap.add_argument("--overwrite", action="store_true", help="replace existing outputs in --out-dir")
+    ap.add_argument("--inf", default=cf.INF, help="inference root (default results/inference_v19; "
+                    "results/inference_v19_hydro2 for the hydro_v2 re-masked maps from 51)")
+    ap.add_argument("--out-dir", default=OUT_DIR)
     a = ap.parse_args()
+    cf.INF = a.inf
+    OUT_DIR = a.out_dir
+    OUT_GPKG = os.path.join(OUT_DIR, "deso_canopy_v19.gpkg")
+    OUT_CSV = os.path.join(OUT_DIR, "deso_canopy_v19_long.csv")
+    print(f"inference maps from {cf.INF}/, outputs to {OUT_DIR}/")
 
     if not a.overwrite and any(os.path.exists(p) for p in (OUT_GPKG, OUT_CSV)):
         print(f"[skip] {OUT_GPKG} or {OUT_CSV} exists; nothing done (pass --overwrite to rebuild)")
