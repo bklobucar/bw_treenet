@@ -10,8 +10,12 @@ Per row, in <out>/<folder>/<id>/:
   window.qgz   QGIS project, top to bottom: extent, ignore, canopy, image; styles from styles/
 Rows with an empty E, N or era are skipped and listed.
 
-Test points (<out>/01_test_points), per city: stratified random points from NMD 2018 (--nmd), STRATA x
---per-stratum, at the cell centres of a --grid m grid that are inside the 2023 tätort, not hydro_v2
+Test points (<out>/01_test_points), per city: stratified random points from NMD2023 basskikt v2.1 (--nmd),
+STRATA x --per-stratum. Codes are checked against the raster attribute table (NMD2023bas_v2_1.tif.vat.dbf;
+the product description's Bilaga 1 is a figure). Forest share = share of the NMD 10 m cells within 50 m
+that are forest (111-117, 121-127; temporarily non-forest 118/128 is not forest); a pixel takes the first
+stratum it matches, so open vegetated land with 20-60 % forest share is "mixed", not "open_shrub". The
+code-to-stratum table is printed. Points sit at the cell centres of a --grid m grid that are inside the 2023 tätort, not hydro_v2
 water (all_touched, as 19), have imagery in every --point-eras era, and are >= --min-dist m from every
 training tile / clip (TRAIN_GLOBS) and every window in the CSV with coordinates (placeholder rows
 cannot be excluded, so rerun once they are filled in). Each footprint is grown by --min-dist on every
@@ -20,12 +24,12 @@ side, so corners are slightly over-excluded. The same locations go into every er
   chips/       one --chip-m image chip per point (named by pid); chips.vrt mosaics them
   points.qgz   QGIS project: points (styles/points.qml, value-map form), chips
 The strata never go into the package: <key-dir>/<city>_<era>.csv maps pid -> point uid, E, N, stratum,
-NMD class. Same --seed, CSV and inputs -> same points and orders.
+NMD class, forest share. Same --seed, CSV and inputs -> same points and orders.
 
 Existing window/set folders (and their keys) are kept, so a rerun resumes; --overwrite rebuilds them,
 which REPLACES any labels already digitised into them. <out>.zip is rebuilt from <out> on every run.
 
-    python scripts/53_build_label_queue.py --nmd data/ext/NMD2018bas_ogeneraliserad_v1_1.tif
+    python scripts/53_build_label_queue.py                 # NMD from data/ext/nmd2023/nmd2023.vrt
 gis env (GDAL Python bindings).
 """
 import argparse, csv, glob, importlib, os, shutil, sys, uuid, zipfile
@@ -46,13 +50,43 @@ POINT_ERAS = ["1960", "1970", "1990r05", "2005", "2010"]
 TRAIN_GLOBS = ["data/processed/*/tiles*/images/*.tif", "data/raw/clips_for_labelling/*_clip.tif"]
 STYLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "styles")
 POINTS_DIR = "01_test_points"
-# NMD 2018 basskikt class -> stratum (water, 61/62, is in no stratum)
+NMD = "data/ext/nmd2023/nmd2023.vrt"           # NMD2023 basskikt v2.1, mosaic of the per-city clips (UInt16)
+NMD_RES = 10.0
+SHARE_R = 50.0                                  # radius of the forest share, m
+# NMD2023 v2.1 codes (raster attribute table); fastmark 11x with their våtmark twins 12x
+CONIFER = [111, 112, 113, 121, 122, 123]                         # pine, spruce, mixed conifer
+DECIDUOUS = [115, 117, 116, 114, 125, 127, 126, 124]             # deciduous, + hardwood, hardwood, mixed forest
+FOREST = CONIFER + DECIDUOUS
+ARTIFICIAL = [51, 53, 52]                                        # buildings, roads/railways, other artificial
+OPEN_VEG = [4211, 4212, 4213, 4221, 4222, 4223, 4231, 4232, 4233]   # other open land with vegetation
+OPEN_WET = [200] + list(range(211, 219)) + list(range(221, 229))   # open wetland (all subclasses)
+TEMP_NONFOREST = [118, 128]
+# stratum -> (codes, rule on the forest share or None, rule as text); a pixel takes the first match.
+# Not in any stratum: arable 3, bare 411, peat extraction 54, water 61/62, low mountain forest 23/43,
+# and artificial land with a forest share of 10-20 % or above 60 %.
 STRATA = {
-    "forest":           list(range(111, 119)) + list(range(121, 129)),
-    "open_vegetated":   [2, 42],                 # open wetland, other open land with vegetation
-    "arable_bare":      [3, 41],                 # arable, other open land without vegetation
-    "buildings":        [51],
-    "other_artificial": [52, 53],                # other artificial surfaces, roads and railways
+    "closed_conifer":   (CONIFER, None, ""),
+    "closed_deciduous": (DECIDUOUS, None, ""),
+    "built_up":         (ARTIFICIAL, lambda s: s < 0.10, "forest share within 50 m < 10 %"),
+    "mixed":            (ARTIFICIAL + OPEN_VEG, lambda s: (s >= 0.20) & (s <= 0.60), "forest share within 50 m 20-60 %"),
+    "open_shrub":       (OPEN_VEG + OPEN_WET + TEMP_NONFOREST, None, ""),
+}
+NMD_NAMES = {
+    51: "Byggnad", 52: "Anlagd mark, ej byggnad eller väg/järnväg", 53: "Väg eller järnväg",
+    111: "Tallskog på fastmark", 112: "Granskog på fastmark", 113: "Barrblandskog på fastmark",
+    114: "Lövblandad barrskog på fastmark", 115: "Triviallövskog på fastmark", 116: "Ädellövskog på fastmark",
+    117: "Triviallövskog med ädellövinslag på fastmark", 118: "Temporärt ej skog på fastmark",
+    121: "Tallskog på våtmark", 122: "Granskog på våtmark", 123: "Barrblandskog på våtmark",
+    124: "Lövblandad barrskog på våtmark", 125: "Triviallövskog på våtmark", 126: "Ädellövskog på våtmark",
+    127: "Triviallövskog med ädellövinslag på våtmark", 128: "Temporärt ej skog på våtmark",
+    200: "Öppen våtmark (underindelning saknas)", 211: "Buskmyr", 212: "Ristuvemyr", 213: "Fastmattemyr, mager",
+    214: "Fastmattemyr, frodig", 215: "Sumpkärr", 216: "Mjukmattemyr", 217: "Lösbottenmyr", 218: "Övrig öppen myr",
+    221: "Våtmark med buskar", 222: "Risdominerad våtmark", 223: "Gräsdominerad våtmark, mager",
+    224: "Gräsdominerad våtmark, frodvuxen", 225: "Gräsdominerad våtmark, högvuxen", 226: "Mossdominerad våtmark",
+    227: "Våtmark utan växttäcke", 228: "Övrig öppen våtmark",
+    4211: "Torr buskdominerad mark", 4212: "Frisk buskdominerad mark", 4213: "Frisk-fuktig buskdominerad mark",
+    4221: "Torr risdominerad mark", 4222: "Frisk risdominerad mark", 4223: "Frisk-fuktig risdominerad mark",
+    4231: "Torr gräsdominerad mark", 4232: "Frisk gräsdominerad mark", 4233: "Frisk-fuktig gräsdominerad mark",
 }
 SRS = osr.SpatialReference()
 SRS.ImportFromEPSG(3006)
@@ -335,6 +369,32 @@ def train_boxes():
     return boxes
 
 
+def nmd_sheet(path, box):
+    """NMD codes on the box at 10 m, and per cell the forest share of the NMD cells within SHARE_R m."""
+    r = int(round(SHARE_R / NMD_RES))
+    m = r * NMD_RES
+    c = gdal.Warp("", path, format="MEM", outputBounds=(box[0] - m, box[1] - m, box[2] + m, box[3] + m),
+                  xRes=NMD_RES, yRes=NMD_RES, resampleAlg="near", srcNodata="None",
+                  outputType=gdal.GDT_UInt16).ReadAsArray()        # UInt16: codes go up to 4233
+    forest, known = np.isin(c, FOREST).astype(np.float32), (c > 0).astype(np.float32)
+    H, W = c.shape[0] - 2 * r, c.shape[1] - 2 * r
+    fs, ks = np.zeros((H, W), np.float32), np.zeros((H, W), np.float32)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dy * dy + dx * dx <= r * r:
+                fs += forest[r + dy:r + dy + H, r + dx:r + dx + W]
+                ks += known[r + dy:r + dy + H, r + dx:r + dx + W]
+    return c[r:r + H, r:r + W], fs / np.maximum(ks, 1)
+
+
+def print_strata():
+    print(f"  NMD2023 v2.1 code -> stratum (a pixel takes the first stratum it matches; forest = {FOREST})")
+    for s, (codes, _, rule) in STRATA.items():
+        print(f"    {s}" + (f"   [{rule}]" if rule else ""))
+        for c in codes:
+            print(f"      {c:5d}  {NMD_NAMES[c]}")
+
+
 def sample_city(city, a, excl, tat_ds, rng):
     """-> [dict(uid, E, N, stratum, nmd)] in uid order (shuffled, so uid order says nothing about strata)."""
     if not os.path.exists(HYDRO[city]):
@@ -347,7 +407,8 @@ def sample_city(city, a, excl, tat_ds, rng):
     sheets = sorted(set.intersection(*[set(idx[e]) for e in a.point_eras]))
     names = [tat_ds.GetLayer(i).GetName() for i in range(tat_ds.GetLayerCount())]
     tat_layers = [TAT_LAYER] if TAT_LAYER in names else None
-    cells, area = [], np.zeros(len(STRATA) + 1)    # cells: (sheet, flat index, stratum, nmd) per candidate
+    f = int(round(NMD_RES / a.grid))                # sampling cells per NMD cell, per axis
+    cells, area = [], np.zeros(len(STRATA) + 1)    # per sheet: (sheet, nx, flat index, stratum, nmd, share)
     for sh in sheets:
         box = cf.sheet_box(sh)
         ok = burn(tat_ds, box, a.grid, layers=tat_layers)
@@ -359,18 +420,21 @@ def sample_city(city, a, excl, tat_ds, rng):
         ok &= ~box_mask(box, a.grid, excl)
         if not ok.any():
             continue
-        nmd = cf.warp(a.nmd, box, a.grid, "near")
+        nmd, share = (np.repeat(np.repeat(x, f, 0), f, 1) for x in nmd_sheet(a.nmd, box))
         st = np.zeros(ok.shape, np.uint8)
-        for k, codes in enumerate(STRATA.values(), 1):
-            st[np.isin(nmd, codes) & ok] = k
+        for k, (codes, rule, _) in enumerate(STRATA.values(), 1):
+            m = ok & (st == 0) & np.isin(nmd, codes)
+            if rule is not None:
+                m &= rule(share)
+            st[m] = k
         flat = np.flatnonzero(st)
         area += np.bincount(st.ravel()[flat], minlength=len(STRATA) + 1)
-        cells.append((sh, ok.shape[1], flat, st.ravel()[flat], nmd.ravel()[flat]))
+        cells.append((sh, ok.shape[1], flat, st.ravel()[flat], nmd.ravel()[flat], share.ravel()[flat]))
     print(f"  {city}: {len(sheets)} sheets with imagery in every era; candidate area by stratum (km2): " +
           ", ".join(f"{s} {area[k] * a.grid ** 2 / 1e6:.2f}" for k, s in enumerate(STRATA, 1)))
     pts = []
     for k, s in enumerate(STRATA, 1):
-        sel = [(sh, nx, f[v == k], c[v == k]) for sh, nx, f, v, c in cells]
+        sel = [(sh, nx, fl[v == k], c[v == k], sv[v == k]) for sh, nx, fl, v, c, sv in cells]
         counts = np.array([len(x[2]) for x in sel])
         n = min(a.per_stratum, int(counts.sum()))
         if n < a.per_stratum:
@@ -380,12 +444,12 @@ def sample_city(city, a, excl, tat_ds, rng):
         cum = np.cumsum(counts)
         for g in np.sort(rng.choice(int(counts.sum()), n, replace=False)):
             i = int(np.searchsorted(cum, g, side="right"))
-            sh, nx, f, c = sel[i]
+            sh, nx, fl, c, sv = sel[i]
             j = g - (cum[i] - counts[i])
-            row, col = divmod(int(f[j]), nx)
+            row, col = divmod(int(fl[j]), nx)
             box = cf.sheet_box(sh)
             pts.append(dict(E=box[0] + (col + 0.5) * a.grid, N=box[3] - (row + 0.5) * a.grid,
-                            stratum=s, nmd=int(c[j])))
+                            stratum=s, nmd=int(c[j]), share=round(float(sv[j]), 3)))
     rng.shuffle(pts)
     for i, p in enumerate(pts, 1):
         p["uid"] = f"{city}_{i:03d}"
@@ -428,12 +492,12 @@ def build_set(city, era, pts, perm, a):
               (min(E) - h, min(N) - h, max(E) + h, max(N) + h))
     os.makedirs(a.key_dir, exist_ok=True)
     with open(key + ".part", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["set", "pid", "uid", "city", "era", "E", "N", "stratum", "nmd_class"],
-                           lineterminator="\n")
+        w = csv.DictWriter(fh, fieldnames=["set", "pid", "uid", "city", "era", "E", "N", "stratum", "nmd_class",
+                                           "forest_share_50m"], lineterminator="\n")
         w.writeheader()
         for pid, p in enumerate(order, 1):
             w.writerow(dict(set=name, pid=pid, uid=p["uid"], city=city, era=era, E=p["E"], N=p["N"],
-                            stratum=p["stratum"], nmd_class=p["nmd"]))
+                            stratum=p["stratum"], nmd_class=p["nmd"], forest_share_50m=p["share"]))
     if os.path.exists(dst):
         shutil.rmtree(dst)
     os.replace(tmp, dst)
@@ -444,7 +508,10 @@ def build_set(city, era, pts, perm, a):
 def test_points(a, located):
     print(f"\n== {POINTS_DIR}")
     if not a.nmd or not os.path.exists(a.nmd):
-        print(f"SKIPPED test points: NMD 2018 raster not found ({a.nmd or 'no --nmd given'})"); return
+        print(f"SKIPPED test points: NMD raster not found ({a.nmd or 'no --nmd given'})"); return
+    if abs(NMD_RES / a.grid - round(NMD_RES / a.grid)) > 1e-9:
+        print(f"SKIPPED test points: --grid {a.grid} does not divide the {NMD_RES:g} m NMD cell"); return
+    print_strata()
     if not os.path.exists(cf.TAT):
         print(f"SKIPPED test points: 2023 tätort not found at {cf.TAT}"); return
     boxes = train_boxes()
@@ -496,7 +563,7 @@ def main(a):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", default="label_windows.csv")
-    ap.add_argument("--nmd", default=None, help="NMD 2018 basskikt raster (EPSG:3006, 10 m)")
+    ap.add_argument("--nmd", default=NMD, help="NMD2023 basskikt v2.1 raster or VRT (EPSG:3006, 10 m, UInt16)")
     ap.add_argument("--out", default="results/anna_labelling")
     ap.add_argument("--key-dir", default="results/anna_labelling_key", help="strata keys; kept out of the zip")
     ap.add_argument("--margin", type=float, default=25.0, help="context around each window, m")
@@ -505,7 +572,7 @@ if __name__ == "__main__":
     ap.add_argument("--per-stratum", type=int, default=30)
     ap.add_argument("--min-dist", type=float, default=500.0, help="from training footprints and windows, m")
     ap.add_argument("--grid", type=float, default=2.0, help="sampling grid, m")
-    ap.add_argument("--chip-m", type=float, default=100.0, help="image chip side per test point, m")
+    ap.add_argument("--chip-m", type=float, default=300.0, help="image chip side per test point, m")
     ap.add_argument("--seed", type=int, default=53)
     ap.add_argument("--no-points", action="store_true")
     ap.add_argument("--overwrite", action="store_true", help="rebuild existing folders (replaces labels in them)")

@@ -45,8 +45,8 @@
         <config>
           <Option type="Map">
             <Option type="List" name="map">
-              <Option type="Map"><Option type="QString" name="1 low" value="1"/></Option>
-              <Option type="Map"><Option type="QString" name="2 high" value="2"/></Option>
+              <Option type="Map"><Option type="QString" name="1 sure" value="1"/></Option>
+              <Option type="Map"><Option type="QString" name="2 probable" value="2"/></Option>
             </Option>
           </Option>
         </config>
