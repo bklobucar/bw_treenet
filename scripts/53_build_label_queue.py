@@ -272,8 +272,16 @@ def gray_pipe(lo, hi):
     return [pipe]
 
 
-def write_qgz(path, title, layers, box):
-    """layers, top to bottom: dict(name, source relative to the project, kind vector|raster, geom, style)."""
+# snapping for the window projects, as QGIS 3.40.5 saves it: enabled, all layers (mode 2), vertex and segment
+# (type 3), 10 px (unit 1), no self-/intersection snapping; avoid overlap on the active layer
+# (AvoidIntersectionsMode 1), no topological editing. Tracing is not a project setting (canvas toggle, T).
+SNAP = dict(enabled="1", mode="2", type="3", tolerance="10", unit="1", minScale="0", maxScale="0",
+            scaleDependencyMode="0", **{"self-snapping": "0", "intersection-snapping": "0"})
+
+
+def write_qgz(path, title, layers, box, snapping=False):
+    """layers, top to bottom: dict(name, source relative to the project, kind vector|raster, geom, style).
+    snapping: SNAP settings (window projects)."""
     q = ET.Element("qgis", projectname=title, version="3.34.0-Prizren")
     ET.SubElement(q, "homePath", path="")
     ET.SubElement(q, "title").text = title
@@ -286,6 +294,8 @@ def write_qgz(path, title, layers, box):
     ET.SubElement(mc, "rotation").text = "0"
     srs_el(mc, "destinationsrs")
     pl = ET.SubElement(q, "projectlayers")
+    if snapping:
+        indiv = ET.SubElement(ET.SubElement(q, "snapping-settings", **SNAP), "individual-layer-settings")
     for L in layers:
         lid = f"{L['name']}_{uuid.uuid4().hex}"
         prov = "ogr" if L["kind"] == "vector" else "gdal"
@@ -294,6 +304,9 @@ def write_qgz(path, title, layers, box):
         attrs = dict(type=L["kind"])
         if L["kind"] == "vector":
             attrs.update(geometry=L["geom"], wkbType=L["geom"])
+            if snapping:
+                ET.SubElement(indiv, "layer-setting", id=lid, enabled="1", type=SNAP["type"], tolerance=SNAP["tolerance"],
+                              units=SNAP["unit"], minScale="0", maxScale="0")
         m = ET.SubElement(pl, "maplayer", **attrs)
         extent_el(m, box)
         ET.SubElement(m, "id").text = lid
@@ -308,6 +321,10 @@ def write_qgz(path, title, layers, box):
     props = ET.SubElement(q, "properties")
     paths = ET.SubElement(props, "Paths")
     ET.SubElement(paths, "Absolute", type="bool").text = "false"
+    if snapping:
+        dig = ET.SubElement(props, "Digitizing")
+        ET.SubElement(dig, "AvoidIntersectionsMode", type="int").text = "1"
+        ET.SubElement(dig, "TopologicalEditing", type="int").text = "0"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(os.path.splitext(os.path.basename(path))[0] + ".qgs",
                    DOCTYPE + ET.tostring(q, encoding="unicode"))
@@ -360,7 +377,7 @@ def build_window(r, a):
     write_qgz(os.path.join(tmp, "window.qgz"), r["id"],
               [vec("extent"), vec("ignore"), vec("canopy"),
                dict(name=f"image {era} ({os.path.basename(own[-1])})", source="./image.tif", kind="raster",
-                    style=gray_pipe(*stretch(img)))], cbox)
+                    style=gray_pipe(*stretch(img)))], cbox, snapping=True)
     if os.path.exists(dst):
         shutil.rmtree(dst)
     os.replace(tmp, dst)
