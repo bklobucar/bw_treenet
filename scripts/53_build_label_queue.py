@@ -18,14 +18,18 @@ that are forest (111-117, 121-127; temporarily non-forest 118/128 is not forest)
 stratum it matches, so open vegetated land with 20-60 % forest share is "mixed", not "open_shrub". The
 code-to-stratum table is printed. Points sit at the cell centres of a --grid m grid that are inside the
 2023 tätort, not hydro_v2 water (all_touched, as 19), have imagery in every --point-eras era, and are
-  >= --excl-hist m (500) from every historical training tile (data/processed/*/tiles_<year>*, year < 2000),
-     every labelling clip (data/raw/clips_for_labelling) and every window in the CSV with coordinates
-     (placeholder rows cannot be excluded, so rerun once they are filled in), and
-  >= --excl-modern m (100) from every modern training tile (data/processed/*/tiles, or tiles_<year>, year >= 2000).
+  >= 500 m (HIST_BUFFER, fixed) from every historical training tile (data/processed/*/tiles_<year>*,
+     year < 2000), every labelling clip (data/raw/clips_for_labelling) and every window in the CSV with
+     coordinates (placeholder rows cannot be excluded, so rerun once they are filled in), and
+  >= --modern-buffer m (100) from every modern training tile (data/processed/*/tiles, or tiles_<year>,
+     year >= 2000); 0 = the footprint only, negative = modern tiles not excluded.
 Each footprint is grown by its distance on every side, so corners are slightly over-excluded. Tiles without
 georeferencing (the 9 malmo/tiles_1959) are placed by 54 (own geotransform, offsets in the name, or image
 matching in the 1959 validation clip / frames); a tile that cannot be placed is reported with the reason and
-left out. The candidate area per stratum is printed before and after the exclusion. Points are drawn per
+left out. Per city and stratum the log gives the candidate area before the exclusion, the area each rule
+removes on its own (historical tiles, clips, windows, modern footprint, modern + 100 m, modern + the chosen
+buffer), and the area left after all rules; before the spacing. The settings of the run (buffers,
+footprint counts, spacing, strata, eras, NMD, seed) go to <key-dir>/settings.txt. Points are drawn per
 stratum (rarest first) in random order and kept only if >= --min-spacing m (100) from every test point already
 kept in the city, so the sample is spatially spread rather than strictly uniform; a stratum short of
 --per-stratum is reported. The same locations go into every era. Per set (city_era):
@@ -48,7 +52,7 @@ which REPLACES any labels already digitised into them. <out>.zip is rebuilt from
     python scripts/53_build_label_queue.py                 # NMD from data/ext/nmd2023/nmd2023.vrt
 gis env (GDAL Python bindings).
 """
-import argparse, csv, glob, importlib, os, re, shutil, sys, uuid, zipfile
+import argparse, csv, datetime, glob, importlib, os, re, shutil, sys, uuid, zipfile
 import xml.etree.ElementTree as ET
 import numpy as np
 from osgeo import gdal, ogr, osr
@@ -67,6 +71,7 @@ POINT_ERAS = ["1960", "1970", "1990r05", "2005", "2010"]
 # with year >= 2000, the rest (tiles_<year>* before 2000, labelling clips) historical
 TRAIN_GLOBS = ["data/processed/*/tiles*/images/*.tif", "data/raw/clips_for_labelling/*_clip.tif"]
 TILE_YEAR = re.compile(r"^tiles_(\d{4})")
+HIST_BUFFER = 500.0                             # m around historical tiles, labelling clips and windows (fixed)
 STYLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "styles")
 POINTS_DIR = "01_test_points"
 CAL_DIR = "00_calibration"
@@ -375,8 +380,9 @@ def is_modern(f):
 
 
 def train_boxes():
-    """-> (historical boxes, modern boxes)"""
-    hist, modern, sets = [], [], {}
+    """-> (historical tile boxes, labelling clip boxes, modern tile boxes, notes for settings.txt)"""
+    hist, clips, modern, sets, notes = [], [], [], {}, []
+    put = lambda f, b: (modern if is_modern(f) else hist if "/processed/" in f.replace("\\", "/") else clips).append(b)
     for g in TRAIN_GLOBS:
         files, bad, placed = sorted(glob.glob(g)), [], 0
         for f in files:
@@ -390,7 +396,7 @@ def train_boxes():
                 bad.append((f, "no EPSG:3006 georeferencing")); continue
             x = (gt[0], gt[0] + gt[1] * d.RasterXSize)
             y = (gt[3], gt[3] + gt[5] * d.RasterYSize)
-            (modern if is_modern(f) else hist).append((min(x), min(y), max(x), max(y)))
+            put(f, (min(x), min(y), max(x), max(y)))
         nogeo = [f for f, why in bad if why.startswith("no EPSG") and "tiles_1959" in f.replace("\\", "/")]
         if nogeo:
             print(f"  {len(nogeo)} tiles_1959 tiles without georeferencing: placing them with 54")
@@ -399,14 +405,18 @@ def train_boxes():
             except Exception as e:                      # print why and continue without them
                 print(f"    could not place them ({type(e).__name__}: {e}); continuing without them")
                 rows = []
+            notes.append(f"tiles_1959 without georeferencing: {sum(r['ok'] for r in rows)}/{len(nogeo)} placed by 54 "
+                         + "; ".join(f"{os.path.basename(r['file'])} {r.get('method', '')} NCC {r.get('ncc', '')}"
+                                     for r in rows if r["ok"]))
             for r in rows:
                 if r["ok"]:
-                    (modern if is_modern(r["file"]) else hist).append(tuple(r[k] for k in ("xmin", "ymin", "xmax", "ymax")))
+                    put(r["file"], tuple(r[k] for k in ("xmin", "ymin", "xmax", "ymax")))
                     bad = [b for b in bad if b[0] != r["file"]]
                     placed += 1
                 else:
                     bad = [(f, r["why"]) if f == r["file"] else (f, w) for f, w in bad]
         print(f"  training footprints {g}: {len(files)} files, {len(files) - len(bad)} used ({placed} placed by 54)")
+        notes.append(f"{g}: {len(files)} files, {len(files) - len(bad)} used, {len(bad)} not used")
         for f, why in bad[:10]:
             print(f"    NOT USED ({why}): {f}")
         if len(bad) > 10:
@@ -414,7 +424,8 @@ def train_boxes():
     print("  training sets, buffer class:")
     for s, fs in sorted(sets.items()):
         print(f"    {s}: {len(fs)} files, {'modern' if is_modern(fs[0]) else 'historical'}")
-    return hist, modern
+        notes.append(f"  {s}: {len(fs)} files, {'modern' if is_modern(fs[0]) else 'historical'}")
+    return hist, clips, modern, notes
 
 
 def nmd_sheet(path, box):
@@ -482,9 +493,10 @@ def spaced(rng, total, need, xy, taken, d, peers=None, cheb=None):
     return kept
 
 
-def sample_city(city, a, excl, tat_ds, rng, n_cal):
+def sample_city(city, a, rules, excl, tat_ds, rng, n_cal):
     """-> (test points, calibration points), each [dict(uid, city, E, N, stratum, nmd, share)] in uid order
-    (shuffled, so uid order says nothing about strata). n_cal: stratum -> calibration points for this city."""
+    (shuffled, so uid order says nothing about strata). n_cal: stratum -> calibration points for this city.
+    rules: [(label, grown boxes)] whose removed area is reported one by one; excl: all rules combined."""
     if not os.path.exists(HYDRO[city]):
         print(f"  {city}: SKIPPED, no hydro_v2 water at {HYDRO[city]}"); return [], []
     water_ds = gdal.OpenEx(HYDRO[city], gdal.OF_VECTOR)
@@ -498,6 +510,7 @@ def sample_city(city, a, excl, tat_ds, rng, n_cal):
     f = int(round(NMD_RES / a.grid))                # sampling cells per NMD cell, per axis
     cells = []                                      # per sheet: (sheet, nx, flat index, stratum, nmd, share)
     area0, area = np.zeros(len(STRATA) + 1), np.zeros(len(STRATA) + 1)    # before / after the exclusion
+    removed = np.zeros((len(rules), len(STRATA) + 1))                      # by each rule on its own
     for sh in sheets:
         box = cf.sheet_box(sh)
         ok = burn(tat_ds, box, a.grid, layers=tat_layers)
@@ -516,16 +529,22 @@ def sample_city(city, a, excl, tat_ds, rng, n_cal):
                 m &= rule(share)
             st[m] = k
         area0 += np.bincount(st.ravel(), minlength=len(STRATA) + 1)
+        for i, (_, boxes) in enumerate(rules):
+            removed[i] += np.bincount(st[box_mask(box, a.grid, boxes)], minlength=len(STRATA) + 1)
         st[box_mask(box, a.grid, excl)] = 0
         flat = np.flatnonzero(st)
         area += np.bincount(st.ravel()[flat], minlength=len(STRATA) + 1)
         cells.append((sh, ok.shape[1], flat, st.ravel()[flat], nmd.ravel()[flat], share.ravel()[flat]))
     km2 = a.grid ** 2 / 1e6
-    print(f"  {city}: {len(sheets)} sheets with imagery in every era; candidate area by stratum (km2), "
-          f"before -> after the exclusion:")
-    for k, s in enumerate(STRATA, 1):
-        print(f"    {s:18s} {area0[k] * km2:8.2f} -> {area[k] * km2:8.2f}")
-    print(f"    {'total':18s} {area0[1:].sum() * km2:8.2f} -> {area[1:].sum() * km2:8.2f}")
+    print(f"  {city}: {len(sheets)} sheets with imagery in every era; candidate area by stratum (km2), before the "
+          f"spacing: before exclusion, removed by each rule on its own (R1-R{len(rules)}), left after all rules")
+    for i, (label, _) in enumerate(rules, 1):
+        print(f"    R{i} = {label}")
+    print(f"    {'stratum':18s} {'before':>8s}" + "".join(f"{'R%d' % i:>8s}" for i in range(1, len(rules) + 1))
+          + f"{'after':>8s}")
+    for k, s in list(enumerate(STRATA, 1)) + [(slice(1, None), "total")]:
+        v = lambda x: float(np.sum(x[k])) * km2
+        print(f"    {s:18s} {v(area0):8.2f}" + "".join(f"{v(r):8.2f}" for r in removed) + f"{v(area):8.2f}")
     by_stratum = {}
     for k in range(1, len(STRATA) + 1):
         sel = [(sh, nx, fl[v == k], c[v == k], sv[v == k]) for sh, nx, fl, v, c, sv in cells]
@@ -636,21 +655,32 @@ def test_points(a, located):
     print_strata()
     if not os.path.exists(cf.TAT):
         print(f"SKIPPED test points: 2023 tätort not found at {cf.TAT}"); return
-    hist, modern = train_boxes()
-    if not hist or not modern:
-        print("SKIPPED test points: no historical or no modern training footprints found, so the exclusion "
-              "would be incomplete"); return
-    print(f"  windows excluded: {len(located)} CSV rows with coordinates")
-    hist += [r["box"] for r in located]
-    grow = lambda b, d: (b[0] - d, b[1] - d, b[2] + d, b[3] + d)
-    excl = np.array([grow(b, a.excl_hist) for b in hist] + [grow(b, a.excl_modern) for b in modern])
-    print(f"  exclusion: {len(hist)} historical tiles/clips/windows + {a.excl_hist:g} m, "
-          f"{len(modern)} modern tiles + {a.excl_modern:g} m")
+    hist, clips, modern, notes = train_boxes()
+    if not hist or (a.modern_buffer >= 0 and not modern):
+        print("SKIPPED test points: no historical" + (" or no modern" if a.modern_buffer >= 0 else "") +
+              " training footprints found, so the exclusion would be incomplete"); return
+    wins = [r["box"] for r in located]
+    print(f"  windows excluded: {len(wins)} CSV rows with coordinates")
+    grow = lambda bs, d: np.array([(b[0] - d, b[1] - d, b[2] + d, b[3] + d) for b in bs]).reshape(-1, 4)
+    H = f"+ {HIST_BUFFER:g} m"
+    rules = [(f"historical training tiles {H} ({len(hist)})", grow(hist, HIST_BUFFER)),
+             (f"clips_for_labelling {H} ({len(clips)})", grow(clips, HIST_BUFFER)),
+             (f"label windows {H} ({len(wins)})", grow(wins, HIST_BUFFER)),
+             (f"modern training tiles, footprint only ({len(modern)})", grow(modern, 0)),
+             (f"modern training tiles + 100 m ({len(modern)})", grow(modern, 100))]
+    if a.modern_buffer >= 0 and a.modern_buffer not in (0, 100):
+        rules.append((f"modern training tiles + {a.modern_buffer:g} m, chosen ({len(modern)})", grow(modern, a.modern_buffer)))
+    excl = np.vstack([grow(hist + clips + wins, HIST_BUFFER)] +
+                     ([grow(modern, a.modern_buffer)] if a.modern_buffer >= 0 else []))
+    chosen = (f"+ {a.modern_buffer:g} m" if a.modern_buffer > 0 else "footprint only" if a.modern_buffer == 0
+              else "NOT excluded")
+    print(f"  exclusion applied: historical tiles, clips and windows {H}; modern tiles {chosen}")
+    write_settings(a, notes, located, chosen)
     tat_ds = gdal.OpenEx(cf.TAT, gdal.OF_VECTOR)
     alloc, cal = cal_alloc(a), []
     for ci, city in enumerate(a.cities):
         rng = np.random.default_rng([a.seed, ci])
-        pts, c = sample_city(city, a, excl, tat_ds, rng, {s: alloc[city, s] for s in STRATA})
+        pts, c = sample_city(city, a, rules, excl, tat_ds, rng, {s: alloc[city, s] for s in STRATA})
         cal += c
         if not pts:
             continue
@@ -659,6 +689,36 @@ def test_points(a, located):
             name = f"{city}_{era}"
             print(f"    {name}: {build_set(name, os.path.join(POINTS_DIR, name), era, pts, perm, a)}", flush=True)
     calibration_points(a, cal)
+
+
+def write_settings(a, notes, located, chosen):
+    """The test design of this run -> <key-dir>/settings.txt (outside the zip)."""
+    os.makedirs(a.key_dir, exist_ok=True)
+    path = os.path.join(a.key_dir, "settings.txt")
+    L = [f"53_build_label_queue.py settings, {datetime.datetime.now().isoformat(timespec='seconds')}",
+         f"command: {' '.join(sys.argv)}", "",
+         "exclusion of test and calibration points:",
+         f"  historical training tiles (tiles_<year>, year < 2000): + {HIST_BUFFER:g} m (fixed)",
+         f"  clips_for_labelling: + {HIST_BUFFER:g} m (fixed)",
+         f"  label windows ({a.csv}, rows with coordinates): + {HIST_BUFFER:g} m (fixed); "
+         + ", ".join(f"{r['id']}" for r in located),
+         f"  modern training tiles (tiles, tiles_<year> >= 2000): --modern-buffer {a.modern_buffer:g} -> {chosen}",
+         "  footprints grown on every side (square buffers)",
+         "training footprints:"] + [f"  {n}" for n in notes] + [
+         "", "sampling:",
+         f"  cities {' '.join(a.cities)}; eras {' '.join(a.point_eras)} (same test locations in every era)",
+         f"  test points: {a.per_stratum} per stratum and city, >= {a.min_spacing:g} m apart within a city, rarest stratum first",
+         f"  calibration points ({CAL_DIR}/{CAL_SET}): {a.cal_per_stratum} per stratum over all cities, one era each, "
+         f">= {a.min_spacing:g} m from every test point, >= {a.chip_m / 2:g} m apart in E or N",
+         f"  candidates: cell centres of a {a.grid:g} m grid in the 2023 tätort ({cf.TAT}), not hydro_v2 water, "
+         f"imagery in every era",
+         f"  chips {a.chip_m:g} m; seed {a.seed}; NMD {a.nmd}",
+         "strata (NMD2023 v2.1, first match wins; forest share within %g m):" % SHARE_R]
+    for st, (codes, _, rule) in STRATA.items():
+        L.append(f"  {st}: {codes}" + (f" [{rule}]" if rule else ""))
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(L) + "\n")
+    print(f"  settings -> {path}")
 
 
 def calibration_points(a, cal):
@@ -718,8 +778,9 @@ if __name__ == "__main__":
     ap.add_argument("--point-eras", nargs="+", default=POINT_ERAS)
     ap.add_argument("--per-stratum", type=int, default=30)
     ap.add_argument("--cal-per-stratum", type=int, default=20, help="calibration points per stratum, all cities")
-    ap.add_argument("--excl-hist", type=float, default=500.0, help="from historical training tiles/clips and windows, m")
-    ap.add_argument("--excl-modern", type=float, default=100.0, help="from modern training tiles, m")
+    ap.add_argument("--modern-buffer", type=float, default=100.0, metavar="METRES",
+                    help="around modern training tiles; 0 = footprint only, negative = not excluded "
+                         "(historical tiles, clips and windows: always %g m)" % HIST_BUFFER)
     ap.add_argument("--min-spacing", type=float, default=100.0,
                     help="between test points of a city, and from calibration to test points, m")
     ap.add_argument("--grid", type=float, default=2.0, help="sampling grid, m")

@@ -118,7 +118,8 @@ def name_boxes(f, shape, srcs):
         cands, offs = srcs, m.group(1, 2)
     out = []
     for s in cands:
-        gt = gdal.Open(s).GetGeoTransform()
+        d = gdal.Open(s)
+        gt = d.GetGeoTransform()
         for r, c in ((int(offs[0]), int(offs[1])), (int(offs[1]), int(offs[0]))):
             xmin, ymax = gt[0] + c * gt[1], gt[3] + r * gt[5]
             out.append(((xmin, ymax - h * gt[1], xmin + w * gt[1], ymax), gt[1],
@@ -130,14 +131,17 @@ def label_iou(tile, box, shp):
     lab = os.path.join(os.path.dirname(os.path.dirname(tile)), "labels", os.path.basename(tile))
     if not os.path.exists(lab) or not os.path.exists(shp):
         return ""
-    L = gdal.Open(lab).ReadAsArray()
+    lds = gdal.Open(lab)
+    L = lds.ReadAsArray()
     L = L[0] if L.ndim == 3 else L
     L = (L == 1) if (L == 1).any() else (L > 0) & (L != 255)
     h, w = L.shape
     m = gdal.GetDriverByName("MEM").Create("", w, h, 1, gdal.GDT_Byte)
     m.SetGeoTransform((box[0], (box[2] - box[0]) / w, 0, box[3], 0, -(box[3] - box[1]) / h))
-    m.SetProjection(ogr.Open(shp).GetLayer(0).GetSpatialRef().ExportToWkt())
-    gdal.Rasterize(m, shp, burnValues=[1])
+    sds = ogr.Open(shp)                        # held while its layer is used (a freed dataset's layer crashes)
+    lyr = sds.GetLayer(0)
+    m.SetProjection(lyr.GetSpatialRef().ExportToWkt())
+    gdal.Rasterize(m, sds, burnValues=[1], layers=[lyr.GetName()])
     P = m.ReadAsArray().astype(bool)
     u = (L | P).sum()
     return round(float((L & P).sum() / u), 3) if u else ""
@@ -153,7 +157,9 @@ def locate(tiles, clip=CLIP, frames=FRAMES, labels=LABELS, search_m=1000.0, res=
     if not groups:
         return [dict(file=f, ok=0, why=f"no source imagery: neither {clip} nor {frames} exists") for f in tiles]
     if os.path.exists(labels):
-        e = ogr.Open(labels).GetLayer(0).GetExtent()          # xmin, xmax, ymin, ymax
+        lds = ogr.Open(labels)                                # held while its layer is used
+        lyr = lds.GetLayer(0)
+        e = lyr.GetExtent()                                   # xmin, xmax, ymin, ymax
         sbox = (np.floor(e[0] - search_m), np.floor(e[2] - search_m), np.ceil(e[1] + search_m), np.ceil(e[3] + search_m))
     else:
         sbox = None
