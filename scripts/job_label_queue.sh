@@ -29,6 +29,7 @@ for f in label_windows.csv data/Tatorter_2023.gpkg data/hydro_v2/malmo_water.gpk
 done
 [[ -f $NMD ]] || echo "WARNING: NMD not found at $NMD; 53 will skip the test points"
 # extra arguments go to 53, e.g. sbatch scripts/job_label_queue.sh --overwrite
-python -u scripts/53_build_label_queue.py --nmd "$NMD" "$@"
+# modern tiles: gtb/malmo not excluded (2016/2024 imagery, not test flights), sth + 100 m (2011 = test era)
+python -u scripts/53_build_label_queue.py --nmd "$NMD" --modern-buffer-city gtb=-1,malmo=-1,sth=100 "$@"
 du -sh results/anna_labelling results/anna_labelling.zip results/anna_labelling_key
 echo "END label_queue $(date)"

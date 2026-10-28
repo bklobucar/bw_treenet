@@ -22,7 +22,8 @@ code-to-stratum table is printed. Points sit at the cell centres of a --grid m g
      year < 2000), every labelling clip (data/raw/clips_for_labelling) and every window in the CSV with
      coordinates (placeholder rows cannot be excluded, so rerun once they are filled in), and
   >= --modern-buffer m (100) from every modern training tile (data/processed/*/tiles, or tiles_<year>,
-     year >= 2000); 0 = the footprint only, negative = modern tiles not excluded.
+     year >= 2000); 0 = the footprint only, negative = modern tiles not excluded. --modern-buffer-city
+     (e.g. gtb=-1,malmo=-1,sth=100; the job script's default) overrides it per city.
 Each footprint is grown by its distance on every side, so corners are slightly over-excluded. Tiles without
 georeferencing (the 9 malmo/tiles_1959) are placed by 54 (own geotransform, offsets in the name, or image
 matching in the 1959 validation clip / frames); a tile that cannot be placed is reported with the reason and
@@ -72,6 +73,12 @@ POINT_ERAS = ["1960", "1970", "1990r05", "2005", "2010"]
 TRAIN_GLOBS = ["data/processed/*/tiles*/images/*.tif", "data/raw/clips_for_labelling/*_clip.tif"]
 TILE_YEAR = re.compile(r"^tiles_(\d{4})")
 HIST_BUFFER = 500.0                             # m around historical tiles, labelling clips and windows (fixed)
+# per-city modern buffers of job_label_queue.sh and why; written to settings.txt when the run uses exactly these
+MODERN_CITY_DEFAULT = {"gtb": -1.0, "malmo": -1.0, "sth": 100.0}
+MODERN_CITY_REASON = (
+    "Modern training imagery is Gothenburg 2016 + 2024 and Malmo 2024, which are not test flights, so those "
+    "locations stay eligible (gtb, malmo: modern tiles not excluded). Stockholm modern training imagery includes "
+    "the 2011 flight, which is the Stockholm ~2010 test era, so Stockholm modern tiles stay excluded (+100 m).")
 STYLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "styles")
 POINTS_DIR = "01_test_points"
 CAL_DIR = "00_calibration"
@@ -655,9 +662,10 @@ def test_points(a, located):
     print_strata()
     if not os.path.exists(cf.TAT):
         print(f"SKIPPED test points: 2023 tätort not found at {cf.TAT}"); return
+    mb = {c: a.modern_buffer_city.get(c, a.modern_buffer) for c in a.cities}          # per-city modern buffer
     hist, clips, modern, notes = train_boxes()
-    if not hist or (a.modern_buffer >= 0 and not modern):
-        print("SKIPPED test points: no historical" + (" or no modern" if a.modern_buffer >= 0 else "") +
+    if not hist or (max(mb.values()) >= 0 and not modern):
+        print("SKIPPED test points: no historical" + (" or no modern" if max(mb.values()) >= 0 else "") +
               " training footprints found, so the exclusion would be incomplete"); return
     wins = [r["box"] for r in located]
     print(f"  windows excluded: {len(wins)} CSV rows with coordinates")
@@ -668,19 +676,22 @@ def test_points(a, located):
              (f"label windows {H} ({len(wins)})", grow(wins, HIST_BUFFER)),
              (f"modern training tiles, footprint only ({len(modern)})", grow(modern, 0)),
              (f"modern training tiles + 100 m ({len(modern)})", grow(modern, 100))]
-    if a.modern_buffer >= 0 and a.modern_buffer not in (0, 100):
-        rules.append((f"modern training tiles + {a.modern_buffer:g} m, chosen ({len(modern)})", grow(modern, a.modern_buffer)))
-    excl = np.vstack([grow(hist + clips + wins, HIST_BUFFER)] +
-                     ([grow(modern, a.modern_buffer)] if a.modern_buffer >= 0 else []))
-    chosen = (f"+ {a.modern_buffer:g} m" if a.modern_buffer > 0 else "footprint only" if a.modern_buffer == 0
-              else "NOT excluded")
-    print(f"  exclusion applied: historical tiles, clips and windows {H}; modern tiles {chosen}")
-    write_settings(a, notes, located, chosen)
+    base = grow(hist + clips + wins, HIST_BUFFER)
+    chosen = {c: f"+ {d:g} m" if d > 0 else "footprint only" if d == 0 else "NOT excluded" for c, d in mb.items()}
+    print(f"  exclusion applied: historical tiles, clips and windows {H} in every city; modern tiles: "
+          + ", ".join(f"{c} {chosen[c]}" for c in a.cities))
+    write_settings(a, notes, located, mb, chosen)
     tat_ds = gdal.OpenEx(cf.TAT, gdal.OF_VECTOR)
     alloc, cal = cal_alloc(a), []
     for ci, city in enumerate(a.cities):
         rng = np.random.default_rng([a.seed, ci])
-        pts, c = sample_city(city, a, rules, excl, tat_ds, rng, {s: alloc[city, s] for s in STRATA})
+        d = mb[city]
+        crules = rules + ([(f"modern training tiles + {d:g} m, chosen ({len(modern)})", grow(modern, d))]
+                          if d >= 0 and d not in (0, 100) else [])
+        excl = np.vstack([base] + ([grow(modern, d)] if d >= 0 else []))
+        src = "--modern-buffer-city" if city in a.modern_buffer_city else "--modern-buffer"
+        print(f"  {city}: modern rule applied: modern training tiles {chosen[city]} ({src} {d:g})")
+        pts, c = sample_city(city, a, crules, excl, tat_ds, rng, {s: alloc[city, s] for s in STRATA})
         cal += c
         if not pts:
             continue
@@ -691,7 +702,7 @@ def test_points(a, located):
     calibration_points(a, cal)
 
 
-def write_settings(a, notes, located, chosen):
+def write_settings(a, notes, located, mb, chosen):
     """The test design of this run -> <key-dir>/settings.txt (outside the zip)."""
     os.makedirs(a.key_dir, exist_ok=True)
     path = os.path.join(a.key_dir, "settings.txt")
@@ -702,7 +713,12 @@ def write_settings(a, notes, located, chosen):
          f"  clips_for_labelling: + {HIST_BUFFER:g} m (fixed)",
          f"  label windows ({a.csv}, rows with coordinates): + {HIST_BUFFER:g} m (fixed); "
          + ", ".join(f"{r['id']}" for r in located),
-         f"  modern training tiles (tiles, tiles_<year> >= 2000): --modern-buffer {a.modern_buffer:g} -> {chosen}",
+         f"  modern training tiles (tiles, tiles_<year> >= 2000): --modern-buffer {a.modern_buffer:g}, "
+         f"--modern-buffer-city {','.join(f'{c}={d:g}' for c, d in a.modern_buffer_city.items()) or '(none)'}",
+         *[f"    {c}: {chosen[c]}" for c in a.cities],
+         "    reason: " + (MODERN_CITY_REASON if all(mb[c] == MODERN_CITY_DEFAULT.get(c) for c in a.cities)
+                          else "per-city values differ from the documented default "
+                               f"({','.join(f'{c}={d:g}' for c, d in MODERN_CITY_DEFAULT.items())}); none recorded"),
          "  footprints grown on every side (square buffers)",
          "training footprints:"] + [f"  {n}" for n in notes] + [
          "", "sampling:",
@@ -767,6 +783,17 @@ def main(a):
         zip_out(a.out)
 
 
+def city_buffers(text):
+    """'gtb=-1,malmo=-1,sth=100' -> {city: metres}"""
+    out = {}
+    for item in filter(None, (x.strip() for x in text.split(","))):
+        c, _, d = item.partition("=")
+        if c not in cf.CITIES or not d:
+            raise argparse.ArgumentTypeError(f"bad item {item!r}: use CITY=METRES with CITY in {cf.CITIES}")
+        out[c] = float(d)
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", default="label_windows.csv")
@@ -777,6 +804,8 @@ if __name__ == "__main__":
     ap.add_argument("--cities", nargs="+", default=cf.CITIES)
     ap.add_argument("--point-eras", nargs="+", default=POINT_ERAS)
     ap.add_argument("--per-stratum", type=int, default=30)
+    ap.add_argument("--modern-buffer-city", type=city_buffers, default={}, metavar="CITY=M,...",
+                    help="per-city --modern-buffer, e.g. gtb=-1,malmo=-1,sth=100 (-1 not excluded, 0 footprint only)")
     ap.add_argument("--cal-per-stratum", type=int, default=20, help="calibration points per stratum, all cities")
     ap.add_argument("--modern-buffer", type=float, default=100.0, metavar="METRES",
                     help="around modern training tiles; 0 = footprint only, negative = not excluded "
