@@ -49,6 +49,9 @@ its point's era); the era and stratum are only in <key-dir>/calibration.csv.
 
 Existing window/set folders (and their keys) are kept, so a rerun resumes; --overwrite rebuilds them,
 which REPLACES any labels already digitised into them. <out>.zip is rebuilt from <out> on every run.
+<out>/log.csv is the work log (one row per window, K05_points and test point set, in working order, status
+todo); it is written only if it does not exist, even with --overwrite, so the assistant's entries survive a
+rerun. styles/ is copied to <out>/styles if not there.
 
     python scripts/53_build_label_queue.py                 # NMD from data/ext/nmd2023/nmd2023.vrt
 gis env (GDAL Python bindings).
@@ -81,6 +84,12 @@ MODERN_CITY_REASON = (
     "the 2011 flight, which is the Stockholm ~2010 test era, so Stockholm modern tiles stay excluded (+100 m).")
 STYLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "styles")
 POINTS_DIR = "01_test_points"
+LOG_COLS = ["seq", "item", "folder", "type", "expected_h", "date", "hours", "status", "quality", "ignore_pct", "note"]
+EXPECTED_H = {"00_calibration": 1.5, "02_failure_cases": 2, "03_closed_stands_film": 2, "04_shrub_noncanopy": 1.25,
+              POINTS_DIR: 2}
+# test point sets in working order: the city changes every row and the era never repeats back to back
+SET_ORDER = ["malmo_2010", "gtb_1970", "sth_2005", "malmo_1960", "gtb_2010", "sth_1990r05", "malmo_1970", "gtb_2005",
+             "sth_1960", "malmo_1990r05", "gtb_1960", "sth_2010", "malmo_2005", "gtb_1990r05", "sth_1970"]
 CAL_DIR = "00_calibration"
 CAL_SET = "K05_points"
 NMD = "data/ext/nmd2023/nmd2023.vrt"           # NMD2023 basskikt v2.1, mosaic of the per-city clips (UInt16)
@@ -772,6 +781,34 @@ def calibration_points(a, cal):
     print(f"    {CAL_SET}: {build_set('calibration', os.path.join(CAL_DIR, CAL_SET), None, cal, perm, a)}", flush=True)
 
 
+def work_log(a, windows):
+    """<out>/log.csv, pre-filled, only if it does not exist yet (never overwritten); styles/ into <out>."""
+    os.makedirs(a.out, exist_ok=True)
+    st = os.path.join(a.out, "styles")
+    if os.path.isdir(st):
+        print(f"\n{st}/ exists, kept")
+    else:
+        shutil.copytree(STYLES, st)
+        print(f"\n{st}/ copied from {STYLES}")
+    path = os.path.join(a.out, "log.csv")
+    if os.path.exists(path):
+        print(f"{path} exists, KEPT (never overwritten, also not with --overwrite)"); return
+    by_folder = lambda f: [(r["id"], f, "window") for r in sorted(windows, key=lambda r: r["id"]) if r["folder"] == f]
+    sets = [f"{c}_{e}" for c in a.cities for e in a.point_eras]
+    sets = [x for x in SET_ORDER if x in sets] + [x for x in sets if x not in SET_ORDER]
+    items = (by_folder(CAL_DIR) + [(CAL_SET, CAL_DIR, "points")] + [(x, POINTS_DIR, "points") for x in sets]
+             + by_folder("02_failure_cases") + by_folder("03_closed_stands_film") + by_folder("04_shrub_noncanopy"))
+    items += [(r["id"], r["folder"], "window") for r in sorted(windows, key=lambda r: r["id"])
+              if (r["id"], r["folder"], "window") not in items]
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow(LOG_COLS)
+        for i, (item, folder, kind) in enumerate(items, 1):
+            h = 1.5 if item == CAL_SET else EXPECTED_H.get(folder, "")
+            w.writerow([i, item, folder, kind, h, "", "", "todo", "", "", ""])
+    print(f"{path} created ({len(items)} rows, status todo)")
+
+
 def zip_out(out):
     part = out + ".zip.part"
     root = os.path.dirname(os.path.abspath(out))
@@ -796,6 +833,7 @@ def main(a):
         print(f"  {r['folder']}/{r['id']} {r['city']} {r['era']}: {build_window(r, a)}", flush=True)
     if not a.no_points:
         test_points(a, located)
+    work_log(a, todo + [r for r, _ in skipped])
     if os.path.isdir(a.out):
         zip_out(a.out)
 
