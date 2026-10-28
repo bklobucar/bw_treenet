@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """54_georef_1959_tiles.py -- footprints for training tiles without georeferencing (malmo/tiles_1959).
 
-53 excludes test points near every training tile, but the 9 malmo/tiles_1959 tiles carry no EPSG:3006
-georeferencing. They were cut from the 1959 Malmö imagery under the 901 label polygons
-(data/processed/malmo/validation/labels_malmo_1959.shp, ~1 x 1 km in sheet 616_37_00). Each tile is located
-in that imagery (--src) by normalised cross-correlation (NCC): coarse at ~2 m over the label extent +
---search-m m, then to the pixel at full resolution, for each tile pixel size in --res. A tile that has a
-geotransform but no CRS is first checked at that position. As a check, the tile's label raster
-(../labels/<same name>) is compared with the label polygons rasterised on the found footprint (IoU).
+The 9 malmo/tiles_1959 tiles carry no EPSG:3006 georeferencing, and no script in the repo (or its history)
+created them. They hold the 1959 label polygons (data/processed/malmo/validation/labels_malmo_1959.shp,
+~1 x 1 km in sheet 616_37_00), so their source is the validation clip mmo_clip.tif next to it (09 uses it
+as the assessment extent) or the 1959 frame it was cut from. Per tile, sources tried in that order:
+  1 the tile's own geotransform, if it has one without a CRS;
+  2 offsets in the file name (<sheet>_<year>_clip_<a>_<b> or <stem>_<a>_<b>, pixels, row/col either way)
+    from the top-left of the source;
+  3 a search by normalised cross-correlation (NCC): coarse at ~2 m over the label extent + --search-m m,
+    then to the pixel at full resolution, for each tile pixel size in --res.
+Each position is checked by NCC between tile and source (and the tile's label raster, ../labels/<name>,
+against the label polygons: IoU, reported only). ok = NCC >= --min-ncc and, for a search, the best coarse
+peak beats the second (>= one tile away) by >= --min-gap. If a tile cannot be placed, the reason is given.
 
-ok = 1 when NCC >= --min-ncc and the best coarse peak beats the second (>= one tile away) by >= --min-gap.
-Writes --out (file, xmin, ymin, xmax, ymax, res, ncc, ncc_2nd, label_iou, method, ok); 53 adds the ok rows
-to its historical training exclusion. Tiles, labels and imagery are only read; an existing --out is kept
-unless --overwrite.
+53 calls locate() for its ungeoreferenced training tiles. Run alone, this writes --out as a record
+(file, xmin, ymin, xmax, ymax, res, ncc, ncc_2nd, label_iou, method, ok, why). Inputs are only read.
 
     python scripts/54_georef_1959_tiles.py
 gis env (GDAL Python bindings).
 """
-import argparse, csv, glob, os
+import argparse, csv, glob, os, re
 import numpy as np
 from osgeo import gdal, ogr
 
 gdal.UseExceptions()
 ogr.UseExceptions()
+TILES = "data/processed/malmo/tiles_1959/images/*.tif"
+CLIP = "data/processed/malmo/validation/mmo_clip.tif"
+FRAMES = "data/raw/malmo/1960_OF_gray_mmo/*_1959.tif"
+LABELS = "data/processed/malmo/validation/labels_malmo_1959.shp"
+NAME_SHEET = re.compile(r"(\d{3}_\d{2}_\d{2})_(\d{4})_clip_(\d+)_(\d+)")
+NAME_OFFS = re.compile(r"_(\d{3,5})_(\d{3,5})$")
 
 
 def read_tile(path):
@@ -66,9 +75,16 @@ def ncc1(a, b):
     return float((a * b).sum() / max(np.sqrt((a * a).sum() * (b * b).sum()), 1e-9))
 
 
+def check(T, src, box, res):
+    S = region(src, box, res)[:T.shape[0], :T.shape[1]]
+    return ncc1(S, T) if S.shape == T.shape and (S == 0).mean() <= 0.01 else -1.0
+
+
 def search(T, src, sbox, res):
     """-> (ncc, ncc of the second coarse peak, footprint box) for pixel size res."""
     S = region(src, sbox, res)
+    if S.shape[0] < T.shape[0] or S.shape[1] < T.shape[1]:
+        return -1.0, -1.0, None
     k = max(1, int(round(2.0 / res)))
     Tc = down(T, k)
     m = ncc_map(down(S, k), Tc)
@@ -89,9 +105,30 @@ def search(T, src, sbox, res):
     return r, second, (xmin, ymax - h * res, xmin + w * res, ymax)
 
 
+def name_boxes(f, shape, srcs):
+    """Footprints implied by offsets in the file name: [(box, res, method)], both row/col orders."""
+    stem, (h, w) = os.path.splitext(os.path.basename(f))[0], shape
+    m = NAME_SHEET.search(stem)
+    if m:
+        cands, offs = [s for s in srcs if os.path.basename(s).startswith(f"{m.group(1)}_{m.group(2)}")], m.group(3, 4)
+    else:
+        m = NAME_OFFS.search(stem)
+        if not m:
+            return []
+        cands, offs = srcs, m.group(1, 2)
+    out = []
+    for s in cands:
+        gt = gdal.Open(s).GetGeoTransform()
+        for r, c in ((int(offs[0]), int(offs[1])), (int(offs[1]), int(offs[0]))):
+            xmin, ymax = gt[0] + c * gt[1], gt[3] + r * gt[5]
+            out.append(((xmin, ymax - h * gt[1], xmin + w * gt[1], ymax), gt[1],
+                        f"name offsets row {r} col {c} in {os.path.basename(s)}"))
+    return out
+
+
 def label_iou(tile, box, shp):
     lab = os.path.join(os.path.dirname(os.path.dirname(tile)), "labels", os.path.basename(tile))
-    if not os.path.exists(lab):
+    if not os.path.exists(lab) or not os.path.exists(shp):
         return ""
     L = gdal.Open(lab).ReadAsArray()
     L = L[0] if L.ndim == 3 else L
@@ -106,43 +143,75 @@ def label_iou(tile, box, shp):
     return round(float((L & P).sum() / u), 3) if u else ""
 
 
-def main(a):
-    if os.path.exists(a.out) and not a.overwrite:
-        print(f"{a.out} exists, kept (--overwrite to redo)"); return
-    tiles = sorted(glob.glob(a.tiles))
-    srcs = sorted(glob.glob(a.src))
-    print(f"{len(tiles)} tiles ({a.tiles}); {len(srcs)} source images ({a.src})")
-    if not tiles or not srcs:
-        print("nothing to do"); return
-    src = gdal.BuildVRT("", srcs, srcNodata=0, VRTNodata=0, resolution="highest")
-    ext = ogr.Open(a.labels).GetLayer(0).GetExtent()           # xmin, xmax, ymin, ymax
-    g = a.search_m
-    sbox = tuple(float(v) for v in (np.floor(ext[0] - g), np.floor(ext[2] - g), np.ceil(ext[1] + g), np.ceil(ext[3] + g)))
-    print(f"label extent E {ext[0]:.0f}-{ext[1]:.0f} N {ext[2]:.0f}-{ext[3]:.0f}; search box {sbox}")
+def locate(tiles, clip=CLIP, frames=FRAMES, labels=LABELS, search_m=1000.0, res=(0.5, 1.0), min_ncc=0.8,
+           min_gap=0.1, log=print):
+    """-> one row per tile: file, xmin, ymin, xmax, ymax, res, ncc, ncc_2nd, label_iou, method, ok, why."""
+    groups = [(n, s) for n, s in (("validation clip", [clip] if os.path.exists(clip) else []),
+                                  ("1959 frames", sorted(glob.glob(frames)))) if s]
+    log(f"  sources: " + ("; ".join(f"{n} ({len(s)} files)" for n, s in groups) or "NONE") +
+        f" [looked for {clip} and {frames}]")
+    if not groups:
+        return [dict(file=f, ok=0, why=f"no source imagery: neither {clip} nor {frames} exists") for f in tiles]
+    if os.path.exists(labels):
+        e = ogr.Open(labels).GetLayer(0).GetExtent()          # xmin, xmax, ymin, ymax
+        sbox = (np.floor(e[0] - search_m), np.floor(e[2] - search_m), np.ceil(e[1] + search_m), np.ceil(e[3] + search_m))
+    else:
+        sbox = None
+        log(f"  no label polygons at {labels}: search limited to the validation clip's extent")
     rows = []
     for f in tiles:
         T, gt = read_tile(f)
         h, w = T.shape
-        res_, best = None, None
-        if gt != (0, 1, 0, 0, 0, 1) and 2e5 < gt[0] < 1e6 and 6e6 < gt[3] < 7.7e6:
-            box = (gt[0], gt[3] + gt[5] * h, gt[0] + gt[1] * w, gt[3])
-            S = region(src, box, gt[1])[:h, :w]
-            best = (ncc1(S, T), "", box, gt[1], "geotransform")
-        if best is None or best[0] < a.min_ncc:
-            for res in a.res:
-                r, second, box = search(T, src, sbox, res)
+        tried, best = [], None                       # best: (ncc, second, box, res, method)
+        for gname, srcs in groups:
+            vrt = gdal.BuildVRT("", srcs, srcNodata=0, VRTNodata=0, resolution="highest")
+            cands = []
+            if gt != (0, 1, 0, 0, 0, 1) and 2e5 < gt[0] < 1e6 and 6e6 < gt[3] < 7.7e6:
+                cands.append(((gt[0], gt[3] + gt[5] * h, gt[0] + gt[1] * w, gt[3]), gt[1], "own geotransform"))
+            cands += name_boxes(f, (h, w), srcs)
+            for box, r_, method in cands:
+                r = check(T, vrt, box, r_)
+                tried.append(f"{method}: NCC {r:.2f}")
                 if best is None or r > best[0]:
-                    best = (r, second, box, res, "search")
-        r, second, box, res_, method = best
-        ok = r >= a.min_ncc and (second == "" or r - second >= a.min_gap)
-        iou = label_iou(f, box, a.labels)
-        rows.append(dict(file=f, xmin=box[0], ymin=box[1], xmax=box[2], ymax=box[3], res=res_, ncc=round(r, 4),
-                         ncc_2nd="" if second == "" else round(second, 4), label_iou=iou, method=method, ok=int(ok)))
-        print(f"  {os.path.basename(f)} {w}x{h}: {method} res {res_} -> E {box[0]:.1f}-{box[2]:.1f} "
-              f"N {box[1]:.1f}-{box[3]:.1f}; NCC {r:.3f} (2nd {second if second == '' else f'{second:.3f}'}), "
-              f"label IoU {iou}; {'OK' if ok else 'NOT OK'}", flush=True)
+                    best = (r, "", box, r_, method)
+            if best and best[0] >= min_ncc:
+                break
+            g = sbox
+            if g is None:
+                d = gdal.Open(srcs[0]); x = d.GetGeoTransform()
+                g = (x[0], x[3] + x[5] * d.RasterYSize, x[0] + x[1] * d.RasterXSize, x[3])
+            for r_ in res:
+                r, second, box = search(T, vrt, tuple(float(v) for v in g), r_)
+                tried.append(f"search {gname} at {r_} m: NCC {r:.2f} (2nd {second:.2f})")
+                if box and (best is None or r > best[0]):
+                    best = (r, second, box, r_, f"search in {gname}")
+            if best and best[0] >= min_ncc and (best[1] == "" or best[0] - best[1] >= min_gap):
+                break
+        r, second, box, r_, method = best if best and best[2] else (-1.0, "", None, "", "")
+        ok = box is not None and r >= min_ncc and (second == "" or r - second >= min_gap)
+        why = "" if ok else ("best NCC below %.2f or ambiguous peak; tried: " % min_ncc + "; ".join(tried))
+        row = dict(file=f, xmin="", ymin="", xmax="", ymax="", res=r_, ncc=round(r, 4),
+                   ncc_2nd="" if second == "" else round(second, 4), label_iou="", method=method, ok=int(ok), why=why)
+        if box:
+            row.update(xmin=box[0], ymin=box[1], xmax=box[2], ymax=box[3], label_iou=label_iou(f, box, labels))
+        rows.append(row)
+        log(f"    {os.path.basename(f)} {w}x{h}: " +
+            (f"{method}, res {r_} -> E {box[0]:.1f}-{box[2]:.1f} N {box[1]:.1f}-{box[3]:.1f}, NCC {r:.3f}, "
+             f"label IoU {row['label_iou']}" if ok else f"NOT PLACED ({why})"))
+    return rows
+
+
+def main(a):
+    if os.path.exists(a.out) and not a.overwrite:
+        print(f"{a.out} exists, kept (--overwrite to redo)"); return
+    tiles = sorted(glob.glob(a.tiles))
+    print(f"{len(tiles)} tiles ({a.tiles})")
+    if not tiles:
+        return
+    rows = locate(tiles, a.clip, a.frames, a.labels, a.search_m, a.res, a.min_ncc, a.min_gap)
+    fields = ["file", "xmin", "ymin", "xmax", "ymax", "res", "ncc", "ncc_2nd", "label_iou", "method", "ok", "why"]
     with open(a.out, "w", newline="") as fh:
-        wr = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
+        wr = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n", restval="")
         wr.writeheader()
         wr.writerows(rows)
     print(f"wrote {a.out}: {sum(r['ok'] for r in rows)}/{len(rows)} ok")
@@ -150,9 +219,10 @@ def main(a):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--tiles", default="data/processed/malmo/tiles_1959/images/*.tif")
-    ap.add_argument("--src", default="data/raw/malmo/1960_OF_gray_mmo/*_1959.tif")
-    ap.add_argument("--labels", default="data/processed/malmo/validation/labels_malmo_1959.shp")
+    ap.add_argument("--tiles", default=TILES)
+    ap.add_argument("--clip", default=CLIP)
+    ap.add_argument("--frames", default=FRAMES)
+    ap.add_argument("--labels", default=LABELS)
     ap.add_argument("--out", default="data/processed/malmo/tiles_1959_footprints.csv")
     ap.add_argument("--search-m", type=float, default=1000.0, help="search margin around the label extent, m")
     ap.add_argument("--res", type=float, nargs="+", default=[0.5, 1.0], help="tile pixel sizes to try, m")

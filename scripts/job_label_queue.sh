@@ -28,8 +28,7 @@ for f in label_windows.csv data/Tatorter_2023.gpkg data/hydro_v2/malmo_water.gpk
   [[ -f $f ]] || { echo "ERROR: $f not found"; exit 1; }
 done
 [[ -f $NMD ]] || echo "WARNING: NMD not found at $NMD; 53 will skip the test points"
-# footprints of the 9 ungeoreferenced malmo/tiles_1959 tiles (54 keeps an existing CSV)
-python -u scripts/54_georef_1959_tiles.py
+# extra arguments go to 53, e.g. sbatch scripts/job_label_queue.sh --overwrite
 python -u scripts/53_build_label_queue.py --nmd "$NMD" "$@"
 du -sh results/anna_labelling results/anna_labelling.zip results/anna_labelling_key
 echo "END label_queue $(date)"
