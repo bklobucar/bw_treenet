@@ -184,8 +184,8 @@ for epoch in range(1, EPOCHS + 1):
             val_losses.append(loss_fn.loss_function().item())
 
             preds = outputs.argmax(dim=1)
-            inter = ((preds == 1) & (labels == 1)).sum().item()
-            union = ((preds == 1) | (labels == 1)).sum().item()
+            inter = ((preds == 1) & (labels == 1) & (labels != 255)).sum().item()
+            union = (((preds == 1) | (labels == 1)) & (labels != 255)).sum().item()
             if union > 0:
                 iou_scores.append(inter / union)
 

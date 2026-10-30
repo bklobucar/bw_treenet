@@ -1,4 +1,4 @@
-"""Label value 255 = ignore in training (Forest_dataset, IoULoss, 07_train_v18 validation IoU).
+"""Label value 255 = ignore in training (Forest_dataset, IoULoss, validation IoU in 06, 07 and 25).
 
 (a) tiles without 255: loader output, loss and validation IoU are identical to the code before the change;
 (b) pixels labelled 255 contribute nothing to the loss (value or gradient), the IoU term or the validation IoU,
@@ -7,6 +7,7 @@
 """
 import os, re, sys
 import numpy as np
+import pytest
 import tifffile
 import torch
 import torch.nn.functional as F
@@ -44,10 +45,17 @@ def old_val_iou(preds, labels):
     return inter, union
 
 
-# ── the validation IoU lines as they stand in 07_train_v18.py ────────────────
-def new_val_iou(preds, labels):
-    src = open(os.path.join(ROOT, "scripts", "07_train_v18.py"), encoding="utf-8").read()
-    lines = [re.search(rf"^\s*({v} = .*)$", src, re.M).group(1) for v in ("inter", "union")]
+# ── the validation IoU lines as they stand in the training scripts ───────────
+TRAIN_SCRIPTS = ["06_train.py", "07_train_v18.py", "25_train_finetune.py"]
+
+
+def new_val_iou(preds, labels, script="07_train_v18.py"):
+    src = open(os.path.join(ROOT, "scripts", script), encoding="utf-8").read()
+    lines = []
+    for v in ("inter", "union"):
+        found = re.findall(rf"^\s*({v} = .*)$", src, re.M)
+        assert len(found) == 1, f"{script}: expected one '{v} = ' line, found {len(found)}"
+        lines.append(found[0])
     ns = dict(preds=preds, labels=labels)
     for line in lines:
         exec(line, {}, ns)
@@ -82,9 +90,11 @@ def test_loss_without_255_unchanged():
         assert torch.equal(new_loss(x, y), old_loss(x, y))
 
 
-def test_val_iou_without_255_unchanged():
-    preds, labels = labels01(seed=3), labels01(seed=4)
-    assert new_val_iou(preds, labels) == old_val_iou(preds, labels)
+@pytest.mark.parametrize("script", TRAIN_SCRIPTS)
+def test_val_iou_without_255_unchanged(script):
+    for seed in range(3):
+        preds, labels = labels01(seed=3 + seed), labels01(seed=13 + seed)
+        assert new_val_iou(preds, labels, script) == old_val_iou(preds, labels)
 
 
 # ── (b) 255 contributes nothing ──────────────────────────────────────────────
@@ -124,7 +134,8 @@ def test_loss_ignores_255():
     assert abs(new_loss(x, y255).item() - ref.item()) < 1e-6
 
 
-def test_val_iou_ignores_255():
+@pytest.mark.parametrize("script", TRAIN_SCRIPTS)
+def test_val_iou_ignores_255(script):
     labels = labels01(seed=6)
     ign = torch.zeros_like(labels, dtype=torch.bool)
     ign[:, :10, :] = True
@@ -135,7 +146,7 @@ def test_val_iou_ignores_255():
     for fill in (0, 1):                          # prediction on the 255 pixels all 0, then all 1
         preds = base.clone()
         preds[ign] = fill
-        counts.add(new_val_iou(preds, lab255))
+        counts.add(new_val_iou(preds, lab255, script))
     assert len(counts) == 1
     # equals the IoU over the valid pixels only
     v = ~ign
