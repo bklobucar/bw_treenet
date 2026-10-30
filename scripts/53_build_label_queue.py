@@ -53,7 +53,13 @@ which REPLACES any labels already digitised into them. <out>.zip is rebuilt from
 todo); it is written only if it does not exist, even with --overwrite, so the assistant's entries survive a
 rerun. styles/ is copied to <out>/styles if not there.
 
+--windows-csv CSV --out-dir DIR builds only CSV's windows (same window code: image, labels.gpkg, window.qgz with
+snapping) into DIR and zips it to DIR.zip: no test points, no keys, no log.csv, no styles/. DIR may not be or
+overlap the package (results/anna_labelling) or --key-dir. Package windows and key points within 500 m of each
+window are listed, as these windows are not in the test-point exclusion.
+
     python scripts/53_build_label_queue.py                 # NMD from data/ext/nmd2023/nmd2023.vrt
+    python scripts/53_build_label_queue.py --windows-csv demo_windows.csv --out-dir results/anna_demo
 gis env (GDAL Python bindings).
 """
 import argparse, csv, datetime, glob, importlib, os, re, shutil, sys, uuid, zipfile
@@ -83,6 +89,7 @@ MODERN_CITY_REASON = (
     "locations stay eligible (gtb, malmo: modern tiles not excluded). Stockholm modern training imagery includes "
     "the 2011 flight, which is the Stockholm ~2010 test era, so Stockholm modern tiles stay excluded (+100 m).")
 STYLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "styles")
+DEFAULT_OUT = "results/anna_labelling"
 POINTS_DIR = "01_test_points"
 LOG_COLS = ["seq", "item", "folder", "type", "expected_h", "date", "hours", "status", "quality", "ignore_pct", "note"]
 EXPECTED_H = {"00_calibration": 1.5, "02_failure_cases": 2, "03_closed_stands_film": 2, "04_shrub_noncanopy": 1.25,
@@ -824,7 +831,40 @@ def zip_out(out):
     print(f"\nwrote {out}.zip ({n} files, {os.path.getsize(out + '.zip') / 1e6:.1f} MB)")
 
 
+def windows_only(a):
+    """--windows-csv: build only that CSV's windows into --out-dir and zip it; no test points, keys, log or styles.
+    Refuses the package and key folders. Package windows (--csv) and key points within HIST_BUFFER m of a window
+    are listed (read only), since those windows are not in the test-point exclusion."""
+    out = os.path.abspath(a.out)
+    for d in (DEFAULT_OUT, a.key_dir):
+        d = os.path.abspath(d)
+        if out == d or out.startswith(d + os.sep) or d.startswith(out + os.sep):
+            sys.exit(f"[STOP] --windows-csv writes outside the package: --out-dir {a.out} overlaps {d}")
+    located, todo, skipped = read_windows(a.windows_csv)
+    print(f"== windows only, from {a.windows_csv} -> {a.out}: {len(todo)} to build, {len(skipped)} skipped")
+    for r, why in skipped:
+        print(f"  skipped {r['id']} ({r['folder']}): {why}")
+    for r in todo:
+        print(f"  {r['folder']}/{r['id']} {r['city']} {r['era']}: {build_window(r, a)}", flush=True)
+    pkg = read_windows(a.csv)[0] if os.path.exists(a.csv) else []
+    keys = []
+    for k in sorted(glob.glob(os.path.join(a.key_dir, "*.csv"))):
+        with open(k, newline="") as fh:
+            keys += [(os.path.basename(k), p["pid"], float(p["E"]), float(p["N"])) for p in csv.DictReader(fh)]
+    near = lambda b, x0, y0, x1, y1: x0 < b[2] + HIST_BUFFER and x1 > b[0] - HIST_BUFFER and \
+        y0 < b[3] + HIST_BUFFER and y1 > b[1] - HIST_BUFFER
+    print(f"\n  within {HIST_BUFFER:g} m of each window ({a.csv} windows; points in {len(keys)} key rows of {a.key_dir}):")
+    for r in todo:
+        w = [p["id"] for p in pkg if near(r["box"], *p["box"])]
+        k = [f"{s}:{pid}" for s, pid, e, n in keys if near(r["box"], e, n, e, n)]
+        print(f"    {r['id']}: windows {', '.join(w) or 'none'}; points {', '.join(k) or 'none'}")
+    if os.path.isdir(a.out):
+        zip_out(a.out)
+
+
 def main(a):
+    if a.windows_csv:
+        return windows_only(a)
     located, todo, skipped = read_windows(a.csv)
     print(f"== windows from {a.csv}: {len(todo)} to build, {len(skipped)} skipped")
     for r, why in skipped:
@@ -853,7 +893,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", default="label_windows.csv")
     ap.add_argument("--nmd", default=NMD, help="NMD2023 basskikt v2.1 raster or VRT (EPSG:3006, 10 m, UInt16)")
-    ap.add_argument("--out", default="results/anna_labelling")
+    ap.add_argument("--out", "--out-dir", dest="out", default=DEFAULT_OUT)
+    ap.add_argument("--windows-csv", help="build only these windows into --out-dir (not the package) and zip it; "
+                                          "no test points, keys, log.csv or styles (e.g. demo_windows.csv)")
     ap.add_argument("--key-dir", default="results/anna_labelling_key", help="strata keys; kept out of the zip")
     ap.add_argument("--margin", type=float, default=25.0, help="context around each window, m")
     ap.add_argument("--cities", nargs="+", default=cf.CITIES)
