@@ -98,18 +98,20 @@ class IoULoss(nn.Module):
         the spatial overlap. Weighted 0.5/0.5.
         """
         import torch.nn.functional as F
-        target = self.labels   # N x H x W  (integer: 0=background, 1=tree)
+        target = self.labels   # N x H x W  (integer: 0=background, 1=tree, 255=ignore)
         input  = self.logits   # N x C x H x W  (already softmaxed)
         N      = len(input)
 
         # --- cross entropy loss (needs raw logits — use log of softmaxed output) ---
         # input is already softmaxed so use NLLLoss with log
-        ce_loss = F.nll_loss(torch.log(input + 1e-16), target)
+        ce_loss = F.nll_loss(torch.log(input + 1e-16), target, ignore_index=255)
 
-        # --- IoU loss on tree class only ---
-        target_onehot = self.to_one_hot(target, self.n_classes)
-        pred_tree   = input[:, 1, :, :].contiguous().view(N, -1)
-        target_tree = target_onehot[:, 1, :, :].contiguous().view(N, -1)
+        # --- IoU loss on tree class only; 255 pixels count in neither intersection nor union ---
+        valid = target != 255
+        target_onehot = self.to_one_hot(target * valid, self.n_classes)
+        valid = valid.contiguous().view(N, -1)
+        pred_tree   = input[:, 1, :, :].contiguous().view(N, -1) * valid
+        target_tree = target_onehot[:, 1, :, :].contiguous().view(N, -1) * valid
         inter    = (pred_tree * target_tree).sum(1)
         union    = (pred_tree + target_tree - pred_tree * target_tree).sum(1)
         iou_tree = inter / (union + 1e-16)

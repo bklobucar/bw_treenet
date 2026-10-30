@@ -221,8 +221,8 @@ def main():
                 out = model(images)
                 vl.append(IoULoss(out, labels).loss_function().item())
                 preds = out.argmax(dim=1)
-                inter = ((preds == 1) & (labels == 1)).sum().item()
-                union = ((preds == 1) | (labels == 1)).sum().item()
+                inter = ((preds == 1) & (labels == 1) & (labels != 255)).sum().item()
+                union = (((preds == 1) | (labels == 1)) & (labels != 255)).sum().item()
                 if union > 0:
                     ious.append(inter / union)
         tl = float(np.mean(tr)); vloss = float(np.mean(vl))

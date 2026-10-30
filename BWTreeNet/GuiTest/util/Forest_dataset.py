@@ -49,7 +49,7 @@ class Forest_dataset(Dataset):
             # print(name)
             image = tiff.imread(name)
             image = np.squeeze(image)
-            image[image>1] = 1
+            image[(image > 1) & (image != 255)] = 1     # 255 = ignore, kept for the loss
             # print(image.max())
         image.flags.writeable = True
         return image
