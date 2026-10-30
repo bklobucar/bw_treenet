@@ -55,8 +55,9 @@ rerun. styles/ is copied to <out>/styles if not there.
 
 --windows-csv CSV --out-dir DIR builds only CSV's windows (same window code: image, labels.gpkg, window.qgz with
 snapping) into DIR and zips it to DIR.zip: no test points, no keys, no log.csv, no styles/. DIR may not be or
-overlap the package (results/anna_labelling) or --key-dir. Package windows and key points within 500 m of each
-window are listed, as these windows are not in the test-point exclusion.
+overlap the package (results/anna_labelling) or --key-dir. The distance from each window to the nearest --csv
+(package) window is printed; if any is closer than 500 m nothing is built. Key points within 500 m of each window
+are listed, as these windows are not in the test-point exclusion.
 
     python scripts/53_build_label_queue.py                 # NMD from data/ext/nmd2023/nmd2023.vrt
     python scripts/53_build_label_queue.py --windows-csv demo_windows.csv --out-dir results/anna_demo
@@ -831,10 +832,16 @@ def zip_out(out):
     print(f"\nwrote {out}.zip ({n} files, {os.path.getsize(out + '.zip') / 1e6:.1f} MB)")
 
 
+def box_dist(a, b):
+    """Edge-to-edge distance between two boxes (xmin ymin xmax ymax), m; 0 if they touch or overlap."""
+    return float(np.hypot(max(0.0, b[0] - a[2], a[0] - b[2]), max(0.0, b[1] - a[3], a[1] - b[3])))
+
+
 def windows_only(a):
     """--windows-csv: build only that CSV's windows into --out-dir and zip it; no test points, keys, log or styles.
-    Refuses the package and key folders. Package windows (--csv) and key points within HIST_BUFFER m of a window
-    are listed (read only), since those windows are not in the test-point exclusion."""
+    Refuses the package and key folders, and refuses to build anything if a window is closer than HIST_BUFFER m
+    (edge to edge) to a package window (--csv); the distance to the nearest one is printed. Key points within
+    HIST_BUFFER m are listed (read only), since these windows are not in the test-point exclusion."""
     out = os.path.abspath(a.out)
     for d in (DEFAULT_OUT, a.key_dir):
         d = os.path.abspath(d)
@@ -844,20 +851,27 @@ def windows_only(a):
     print(f"== windows only, from {a.windows_csv} -> {a.out}: {len(todo)} to build, {len(skipped)} skipped")
     for r, why in skipped:
         print(f"  skipped {r['id']} ({r['folder']}): {why}")
+    if not os.path.exists(a.csv):
+        sys.exit(f"[STOP] package windows {a.csv} not found; cannot check the distance to them")
+    pkg = read_windows(a.csv)[0]
+    print(f"  distance (edge to edge) to the nearest {a.csv} window; at least {HIST_BUFFER:g} m required:")
+    close = []
+    for r in todo:
+        d, near = min((box_dist(r["box"], p["box"]), p["id"]) for p in pkg) if pkg else (float("inf"), "-")
+        print(f"    {r['id']}: {d:.0f} m to {near}" + ("  TOO CLOSE" if d < HIST_BUFFER else ""))
+        close += [r["id"]] if d < HIST_BUFFER else []
+    if close:
+        sys.exit(f"[STOP] {', '.join(close)} closer than {HIST_BUFFER:g} m to a package window; nothing built")
     for r in todo:
         print(f"  {r['folder']}/{r['id']} {r['city']} {r['era']}: {build_window(r, a)}", flush=True)
-    pkg = read_windows(a.csv)[0] if os.path.exists(a.csv) else []
     keys = []
     for k in sorted(glob.glob(os.path.join(a.key_dir, "*.csv"))):
         with open(k, newline="") as fh:
             keys += [(os.path.basename(k), p["pid"], float(p["E"]), float(p["N"])) for p in csv.DictReader(fh)]
-    near = lambda b, x0, y0, x1, y1: x0 < b[2] + HIST_BUFFER and x1 > b[0] - HIST_BUFFER and \
-        y0 < b[3] + HIST_BUFFER and y1 > b[1] - HIST_BUFFER
-    print(f"\n  within {HIST_BUFFER:g} m of each window ({a.csv} windows; points in {len(keys)} key rows of {a.key_dir}):")
+    print(f"\n  key points within {HIST_BUFFER:g} m of each window ({len(keys)} key rows in {a.key_dir}):")
     for r in todo:
-        w = [p["id"] for p in pkg if near(r["box"], *p["box"])]
-        k = [f"{s}:{pid}" for s, pid, e, n in keys if near(r["box"], e, n, e, n)]
-        print(f"    {r['id']}: windows {', '.join(w) or 'none'}; points {', '.join(k) or 'none'}")
+        k = [f"{s}:{pid}" for s, pid, e, n in keys if box_dist(r["box"], (e, n, e, n)) < HIST_BUFFER]
+        print(f"    {r['id']}: {', '.join(k) or 'none'}")
     if os.path.isdir(a.out):
         zip_out(a.out)
 
